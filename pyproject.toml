@@ -1,0 +1,33 @@
+[project]
+name = "b2b-ecommerce-platform"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = []
+
+[dependency-groups]
+dev = ["ipykernel>=7.1.0", "pytest>=9.0.0", "ruff>=0.14.9", "sqlfmt>=0.0.3"]
+
+[tool.uv.workspace]
+members = ["b2b_etl", "b2b_warehouse", "packages/b2b_utils"]
+
+[tool.uv.sources]
+b2b_utils = { workspace = true }
+
+[tool.sqlfmt]
+exclude = ["target/**/*", "dbt_packages/**/*", ".venv/"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 120
+quote-style = "double"
+
+[tool.ruff.lint.pycodestyle]
+# But override the linter's enforced line length to 10.
+max-line-length = 120
