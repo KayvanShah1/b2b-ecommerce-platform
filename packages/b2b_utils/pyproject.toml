@@ -1,0 +1,12 @@
+[project]
+name = "b2b-utils"
+version = "0.1.0"
+description = "A collection of utilities for B2B applications."
+dependencies = ["pydantic-settings", "pydantic"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/b2b_utils"]
