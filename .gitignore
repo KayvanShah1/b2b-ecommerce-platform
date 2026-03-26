@@ -121,5 +121,9 @@ dmypy.json
 dbt_project/
 .dbt/
 
+# Dagster artifacts
 .dagster_home/
+.dg/
+
+# Data and logs
 var/
