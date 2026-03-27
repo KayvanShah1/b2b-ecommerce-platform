@@ -1,6 +1,6 @@
-name: b2b_warehouse
+name: b2b_ec_warehouse
 
-profile: b2b_warehouse
+profile: b2b_ec_warehouse
 
 seed-paths: ["seeds"]
 model-paths: ["models"]

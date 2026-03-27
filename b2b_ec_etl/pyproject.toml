@@ -1,5 +1,6 @@
 [project]
-name = "b2b_etl"
+name = "b2b-ec-etl"
+description = "ETL components for B2B e-commerce platform"
 requires-python = ">=3.12"
 version = "0.1.0"
 dependencies = [
@@ -10,7 +11,7 @@ dependencies = [
     "dagster-duckdb>=0.28.1",
     "pydantic-settings>=2.12.0",
     # Custom Packages
-    "b2b_utils",
+    "b2b-ec-utils",
 ]
 
 [dependency-groups]
@@ -27,5 +28,8 @@ force-include = { "pyproject.toml" = "pyproject.toml" }
 directory_type = "project"
 
 [tool.dg.project]
-root_module = "b2b_etl"
-registry_modules = ["b2b_etl.components.*"]
+root_module = "b2b_ec_etl"
+registry_modules = ["b2b_ec_etl.components.*"]
+
+[tool.uv.sources]
+b2b-ec-utils = { workspace = true, editable = true }

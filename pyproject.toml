@@ -1,7 +1,7 @@
 [project]
 name = "b2b-ecommerce-platform"
 version = "0.1.0"
-description = "Add your description here"
+description = "Monorepo for B2B e-commerce platform components"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -11,15 +11,18 @@ dependencies = []
 dev = ["ipykernel>=7.1.0", "pytest>=9.0.0", "ruff>=0.14.9", "sqlfmt>=0.0.3"]
 
 [tool.uv.workspace]
-members = ["b2b_etl", "b2b_warehouse", "packages/b2b_utils"]
-
-[tool.uv.sources]
-b2b_utils = { workspace = true }
+members = [
+    "b2b_ec_etl",
+    "b2b_ec_warehouse",
+    "packages/b2b_ec_utils",
+    "deploy_infra",
+]
 
 [tool.sqlfmt]
 exclude = ["target/**/*", "dbt_packages/**/*", ".venv/"]
 
 [tool.ruff]
+extend-include = ["*.ipynb"]
 line-length = 120
 target-version = "py312"
 
