@@ -1,0 +1,13 @@
+[project]
+name = "deploy-infra"
+version = "0.1.0"
+description = "Pulumi infrastructure for B2B platform"
+requires-python = ">=3.12"
+dependencies = [
+    "pulumi>=3.0.0",
+    "pulumi-aws>=6.0.0",
+    "b2b-ec-utils",      # Your shared code
+]
+
+[tool.uv.sources]
+b2b-ec-utils = { workspace = true, editable = true }
