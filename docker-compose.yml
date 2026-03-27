@@ -1,0 +1,26 @@
+services:
+    minio:
+        image: minio/minio:latest
+        container_name: b2b-minio
+        ports:
+            - "9000:9000" # S3 API (Pulumi & Dagster connect here)
+            - "9001:9001" # Web Console
+        environment:
+            MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+            MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+        volumes:
+            - minio_data:/data
+        networks:
+            - b2b_ec_platform_net
+        command: server /data --console-address ":9001"
+        restart: always
+
+networks:
+    b2b_platform_net:
+        driver: bridge
+        name: b2b_ec_platform_net
+
+volumes:
+    minio_data:
+        driver: local
+        name: b2b_ec_data_storage_minio
