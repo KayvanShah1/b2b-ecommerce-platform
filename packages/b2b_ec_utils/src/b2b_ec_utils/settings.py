@@ -1,6 +1,43 @@
+from enum import Enum
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class PostgresConfig(BaseSettings):
+    host: str = Field(default="localhost", description="PostgreSQL host")
+    port: int = Field(default=5432, description="PostgreSQL port")
+    user: str = Field(default="postgres", description="PostgreSQL user")
+    password: str = Field(default="postgres", description="PostgreSQL password")
+    database: str = Field(default="b2b_source", description="PostgreSQL database")
+
+    model_config = SettingsConfigDict(env_prefix="POSTGRES_")
+
+
+class StorageLocation(str, Enum):
+    LOCAL = "local"
+    S3 = "s3"
+    MINIO = "minio"
+    GCS = "gcs"
+
+
+class StorageConfig(BaseSettings):
+    location: StorageLocation = StorageLocation.LOCAL
+    bucket: str = "b2b-ecommerce"
+    prefix: str = "bec"
+
+    # Unified endpoint logic for MinIO/S3
+    endpoint_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("S3_ENDPOINT_URL", "MINIO_ENDPOINT_URL")
+    )
+    access_key: str = Field(default="minioadmin", validation_alias=AliasChoices("AWS_ACCESS_KEY_ID", "MINIO_ROOT_USER"))
+    secret_key: str = Field(
+        default="minio@123", validation_alias=AliasChoices("AWS_SECRET_ACCESS_KEY", "MINIO_ROOT_PASSWORD")
+    )
+    region: str = "us-east-1"
+
+    model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore")
 
 
 class Settings(BaseSettings):
@@ -18,8 +55,10 @@ class Settings(BaseSettings):
     log_dir: Path = Path.joinpath(var_dir, "logs")
 
     # Blob Storage: MinIO configuration
-    minio_root_user: str
-    minio_root_password: str
+    storage: StorageConfig = StorageConfig()
+
+    # PostgreSQL configuration
+    postgres: PostgresConfig = PostgresConfig()
 
     # This tells Pydantic to look for an .env file automatically
     model_config = SettingsConfigDict(env_file=f"{project_root}/.env", env_file_encoding="utf-8", extra="ignore")
@@ -48,6 +87,6 @@ if __name__ == "__main__":
 
     from b2b_ec_utils.logger import get_logger
 
-    logger = get_logger("GWSSettings")
+    logger = get_logger("ApplicationSettings")
     s = pretty_repr(settings.model_dump())
     logger.info(f"Settings loaded: \n{s}")  # Debugging line to check settings
