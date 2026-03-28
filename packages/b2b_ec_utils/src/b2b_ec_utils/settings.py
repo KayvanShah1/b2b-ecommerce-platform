@@ -1,15 +1,15 @@
 from enum import Enum
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class PostgresConfig(BaseSettings):
     host: str = Field(default="localhost", description="PostgreSQL host")
     port: int = Field(default=5432, description="PostgreSQL port")
-    user: str = Field(default="postgres", description="PostgreSQL user")
-    password: str = Field(default="postgres", description="PostgreSQL password")
+    user: SecretStr = Field(default="postgres", description="PostgreSQL user")
+    password: SecretStr = Field(default="postgres", description="PostgreSQL password")
     database: str = Field(default="b2b_source", description="PostgreSQL database")
 
     model_config = SettingsConfigDict(env_prefix="POSTGRES_")
@@ -25,17 +25,22 @@ class StorageLocation(str, Enum):
 class StorageConfig(BaseSettings):
     location: StorageLocation = StorageLocation.LOCAL
     bucket: str = "b2b-ecommerce"
-    prefix: str = "bec"
+    prefix: str = "bec-"
 
     # Unified endpoint logic for MinIO/S3
     endpoint_url: str | None = Field(
         default=None, validation_alias=AliasChoices("S3_ENDPOINT_URL", "MINIO_ENDPOINT_URL")
     )
-    access_key: str = Field(default="minioadmin", validation_alias=AliasChoices("AWS_ACCESS_KEY_ID", "MINIO_ROOT_USER"))
-    secret_key: str = Field(
+    access_key: SecretStr = Field(
+        default="minioadmin", validation_alias=AliasChoices("AWS_ACCESS_KEY_ID", "MINIO_ROOT_USER")
+    )
+    secret_key: SecretStr = Field(
         default="minio@123", validation_alias=AliasChoices("AWS_SECRET_ACCESS_KEY", "MINIO_ROOT_PASSWORD")
     )
     region: str = "us-east-1"
+
+    # Bucket names
+    webserver_logs_bucket: str = "b2b-ec-webserver-logs"
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore")
 
