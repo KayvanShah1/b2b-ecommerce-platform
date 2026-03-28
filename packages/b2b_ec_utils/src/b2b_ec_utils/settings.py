@@ -41,6 +41,7 @@ class StorageConfig(BaseSettings):
 
     # Bucket names
     webserver_logs_bucket: str = "b2b-ec-webserver-logs"
+    marketing_leads_bucket: str = "b2b-ec-marketing-leads"
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore")
 
