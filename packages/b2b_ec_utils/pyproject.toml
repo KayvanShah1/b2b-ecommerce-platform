@@ -2,7 +2,11 @@
 name = "b2b-ec-utils"
 version = "0.1.0"
 description = "A collection of utilities for B2B applications."
-dependencies = ["pydantic-settings", "pydantic"]
+dependencies = [
+    "pydantic-settings",
+    "pydantic",
+    "s3fs>=2026.3.0",
+]
 
 [build-system]
 requires = ["hatchling"]
