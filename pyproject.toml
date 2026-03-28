@@ -15,6 +15,7 @@ members = [
     "b2b_ec_etl",
     "b2b_ec_warehouse",
     "packages/b2b_ec_utils",
+    "packages/b2b_ec_sources",
     "deploy_infra",
 ]
 
