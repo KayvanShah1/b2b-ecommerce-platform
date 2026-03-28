@@ -3,13 +3,13 @@ from io import BytesIO
 
 import numpy as np
 import polars as pl
-import psycopg2
 import pycountry
 from b2b_ec_utils.logger import get_logger
-from b2b_ec_utils.settings import settings
 from b2b_ec_utils.timer import timed_run
 from faker import Faker
 from pydantic import BaseModel, Field
+
+from b2b_ec_sources import get_connection
 
 
 # --- CONFIGURATION CLASS ---
@@ -23,12 +23,12 @@ class GenConfig(BaseModel):
     catalog_size_seed: int = 100
 
     # Evolution Probabilities (Now used per 'loop' iteration)
-    prob_new_company: float = 0.15
-    prob_price_update: float = 0.20
+    prob_new_company: float = Field(0.15, ge=0.0, le=1.0)
+    prob_price_update: float = Field(0.20, ge=0.0, le=1.0)
 
     # Organic Growth Rates (Target % increase per run)
-    target_cust_growth: float = 0.05  # 5% new customers
-    target_prod_growth: float = 0.02  # 2% new products for suppliers
+    target_cust_growth: float = Field(0.05, ge=0.0, le=1.0)  # 5% new customers
+    target_prod_growth: float = Field(0.02, ge=0.0, le=1.0)  # 2% new products for suppliers
 
     # Evolution Parameters
     catalog_size_evo: int = 20
@@ -43,16 +43,6 @@ class GenConfig(BaseModel):
 cfg = GenConfig()
 fake = Faker()
 logger = get_logger("SourceDBGeneration")
-
-
-def get_connection():
-    return psycopg2.connect(
-        host=settings.postgres.host,
-        port=settings.postgres.port,
-        user=settings.postgres.user,
-        password=settings.postgres.password,
-        database=settings.postgres.database,
-    )
 
 
 def pg_bulk_copy(conn, df: pl.DataFrame, table_name: str):
