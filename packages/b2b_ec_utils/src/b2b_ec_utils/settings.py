@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # MotherDuck/DuckDB configuration (Analytics warehouse)
     motherduck: MotherDuckConfig = Field(default_factory=MotherDuckConfig)
 
+    # DBT configuration
+    dbt_project_dir: Path = Path.joinpath(project_root, "b2b_ec_warehouse")
+    dbt_profiles_dir: Path = Path.joinpath(project_root, ".dbt")
+
     # This tells Pydantic to look for an .env file automatically
     model_config = SettingsConfigDict(env_file=f"{project_root}/.env", env_file_encoding="utf-8", extra="ignore")
 
