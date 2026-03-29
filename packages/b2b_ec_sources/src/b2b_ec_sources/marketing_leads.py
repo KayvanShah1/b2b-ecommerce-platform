@@ -70,7 +70,7 @@ class MarketingLeadsGenerator:
 
         # 2. Path Setup
         bucket = settings.storage.marketing_leads_bucket
-        filename = f"leads_{datetime.now().strftime('%Y%m%d')}.csv"
+        filename = f"leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         full_path = storage.get_path(bucket, "marketing", filename)
 
         # 3. Write to Storage
