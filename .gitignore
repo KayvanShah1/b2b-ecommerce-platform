@@ -127,3 +127,5 @@ dbt_project/
 
 # Data and logs
 var/
+
+notebooks/
