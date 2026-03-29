@@ -24,26 +24,34 @@ class StorageLocation(str, Enum):
 
 class StorageConfig(BaseSettings):
     location: StorageLocation = StorageLocation.LOCAL
-    bucket: str = "b2b-ecommerce"
-    prefix: str = "bec-"
+    prefix: str = "b2b-ec"
 
     # Unified endpoint logic for MinIO/S3
     endpoint_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("S3_ENDPOINT_URL", "MINIO_ENDPOINT_URL")
+        default=None, validation_alias=AliasChoices("STORAGE_S3_ENDPOINT_URL", "STORAGE_MINIO_ENDPOINT_URL")
     )
     access_key: SecretStr = Field(
-        default="minioadmin", validation_alias=AliasChoices("AWS_ACCESS_KEY_ID", "MINIO_ROOT_USER")
+        default="minioadmin", validation_alias=AliasChoices("STORAGE_AWS_ACCESS_KEY_ID", "STORAGE_MINIO_ROOT_USER")
     )
     secret_key: SecretStr = Field(
-        default="minio@123", validation_alias=AliasChoices("AWS_SECRET_ACCESS_KEY", "MINIO_ROOT_PASSWORD")
+        default="minio@123",
+        validation_alias=AliasChoices("STORAGE_AWS_SECRET_ACCESS_KEY", "STORAGE_MINIO_ROOT_PASSWORD"),
     )
     region: str = "us-east-1"
 
     # Bucket names
-    webserver_logs_bucket: str = "b2b-ec-webserver-logs"
-    marketing_leads_bucket: str = "b2b-ec-marketing-leads"
+    webserver_logs_bucket: str = f"{prefix}-webserver-logs"
+    marketing_leads_bucket: str = f"{prefix}-marketing-leads"
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore", env_file_encoding="utf-8")
+
+
+class MotherDuckConfig(BaseSettings):
+    local_database: str = Field(default="b2b_ec_warehouse.duckdb", description="MotherDuck/DuckDB database name")
+    database: str = Field(default="b2b_ecommerce", description="MotherDuck database name")
+    token: SecretStr | None = Field(default=None, description="MotherDuck Token")
+
+    model_config = SettingsConfigDict(env_prefix="MOTHERDUCK_", extra="ignore", env_file_encoding="utf-8")
 
 
 class Settings(BaseSettings):
@@ -63,8 +71,11 @@ class Settings(BaseSettings):
     # Blob Storage: MinIO configuration
     storage: StorageConfig = Field(default_factory=StorageConfig)
 
-    # PostgreSQL configuration
+    # PostgreSQL configuration (Source OLTP database)
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
+
+    # MotherDuck/DuckDB configuration (Analytics warehouse)
+    motherduck: MotherDuckConfig = Field(default_factory=MotherDuckConfig)
 
     # This tells Pydantic to look for an .env file automatically
     model_config = SettingsConfigDict(env_file=f"{project_root}/.env", env_file_encoding="utf-8", extra="ignore")
