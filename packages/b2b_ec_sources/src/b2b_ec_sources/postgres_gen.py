@@ -1,17 +1,15 @@
 import random
 from datetime import datetime, timedelta
-from functools import cache
 from io import BytesIO
 
 import numpy as np
 import polars as pl
-import pycountry
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.timer import timed_run
 from faker import Faker
 from pydantic import BaseModel
 
-from b2b_ec_sources import get_connection
+from b2b_ec_sources import get_connection, get_iso_data
 
 
 # --- CONFIGURATION ---
@@ -65,11 +63,6 @@ def pg_bulk_copy(conn, df: pl.DataFrame, table_name: str):
     with conn.cursor() as cursor:
         cursor.copy_from(buffer, table_name, sep="|", columns=df.columns)
     conn.commit()
-
-
-@cache
-def get_iso_data():
-    return [{"code": c.alpha_2, "name": getattr(c, "common_name", c.name)} for c in pycountry.countries]
 
 
 def create_schema(cur):
