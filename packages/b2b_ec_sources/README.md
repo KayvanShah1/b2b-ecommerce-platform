@@ -2,8 +2,6 @@
 
 This package provides data generators for the B2B ecommerce platform. It creates a relational baseline in Postgres and emits supporting marketing leads and webserver logs to the configured storage system. The result is a realistic, evolving dataset that is consistent across sources.
 
-All generators live in `b2b_ec_sources/` (package root: `packages/b2b_ec_sources/src/b2b_ec_sources/`).
-
 ## Why This Matters
 
 Business value:
