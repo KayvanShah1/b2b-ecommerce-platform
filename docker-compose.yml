@@ -18,7 +18,7 @@ services:
 networks:
     b2b_ec_platform_net:
         driver: bridge
-        name: b2b_ec_platform_net
+        name: b2b-ec-platform-net
 
 volumes:
     minio_data:
