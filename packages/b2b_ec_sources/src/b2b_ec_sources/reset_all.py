@@ -36,7 +36,7 @@ def reset_storage():
     """Clears the seed and daily folders from all configured buckets."""
     # List of buckets to clean
     buckets = [
-        settings.storage.bucket,  # Warehouse/Orders
+        settings.storage.marketing_leads_bucket,  # Marketing Leads
         settings.storage.webserver_logs_bucket,  # Weblogs
     ]
 
@@ -59,7 +59,7 @@ def reset_storage():
 
 
 if __name__ == "__main__":
-    console.print("[bold red]🛑 WARNING: This action will WIPE the Database AND Storage Buckets![/bold red]")
+    console.print("[bold red]WARNING: This action will WIPE the Database AND Storage Buckets![/bold red]")
     confirm = console.input("[bold red]Are you absolutely sure? (y/n): [/bold red]")
 
     if confirm.lower() == "y":
@@ -67,6 +67,6 @@ if __name__ == "__main__":
         reset_database()
         # 2. Wipe Storage
         reset_storage()
-        console.print("[bold green]✅ System reset complete. Ready for a fresh seed.[/bold green]")
+        console.print("[bold green]System reset complete. Ready for a fresh seed.[/bold green]")
     else:
         console.print("[yellow]Reset cancelled.[/yellow]")
