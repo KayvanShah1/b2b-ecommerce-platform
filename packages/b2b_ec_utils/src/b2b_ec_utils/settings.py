@@ -10,9 +10,9 @@ class PostgresConfig(BaseSettings):
     port: int = Field(default=5432, description="PostgreSQL port")
     user: SecretStr = Field(default="postgres", description="PostgreSQL user")
     password: SecretStr = Field(default="postgres", description="PostgreSQL password")
-    database: str = Field(default="b2b_source", description="PostgreSQL database")
+    database: str = Field(default="b2b_source_db", description="PostgreSQL database")
 
-    model_config = SettingsConfigDict(env_prefix="POSTGRES_")
+    model_config = SettingsConfigDict(env_prefix="POSTGRES_", extra="ignore", env_file_encoding="utf-8")
 
 
 class StorageLocation(str, Enum):
@@ -43,7 +43,7 @@ class StorageConfig(BaseSettings):
     webserver_logs_bucket: str = "b2b-ec-webserver-logs"
     marketing_leads_bucket: str = "b2b-ec-marketing-leads"
 
-    model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore", env_file_encoding="utf-8")
 
 
 class Settings(BaseSettings):
@@ -61,10 +61,10 @@ class Settings(BaseSettings):
     log_dir: Path = Path.joinpath(var_dir, "logs")
 
     # Blob Storage: MinIO configuration
-    storage: StorageConfig = StorageConfig()
+    storage: StorageConfig = Field(default_factory=StorageConfig)
 
     # PostgreSQL configuration
-    postgres: PostgresConfig = PostgresConfig()
+    postgres: PostgresConfig = Field(default_factory=PostgresConfig)
 
     # This tells Pydantic to look for an .env file automatically
     model_config = SettingsConfigDict(env_file=f"{project_root}/.env", env_file_encoding="utf-8", extra="ignore")
