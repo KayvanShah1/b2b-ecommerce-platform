@@ -7,4 +7,4 @@ def nuke(bucket_name: str = None):
 
 
 if __name__ == "__main__":
-    nuke("b2b-ec-marketing")
+    nuke("b2b-ec-marketing-leads")
