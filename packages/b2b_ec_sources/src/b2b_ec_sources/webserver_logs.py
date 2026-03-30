@@ -3,7 +3,7 @@ import random
 from datetime import datetime, timedelta
 
 import polars as pl
-from b2b_ec_utils import get_logger, settings, timed_run
+from b2b_ec_utils import get_logger, timed_run
 from b2b_ec_utils.storage import storage
 from faker import Faker
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -139,10 +139,8 @@ class WebLogGenerator:
 
     @timed_run
     def generate(self, log_count=None):
-        log_bucket = settings.storage.webserver_logs_bucket
-
         # Check for existing seed data to determine mode
-        seed_path = storage.get_path(log_bucket, "seed", "*.jsonl")
+        seed_path = storage.get_webserver_logs_path(True, "*.jsonl")
         is_seed = len(storage.glob(seed_path)) == 0
         now_ts = datetime.now()
         month_probs = build_month_probability_vector(
@@ -233,9 +231,8 @@ class WebLogGenerator:
         # Chronological sorting using Polars
         df = pl.DataFrame(logs).sort("ts")
 
-        folder = "seed" if is_seed else "daily"
         filename = f"access_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
-        full_path = storage.get_path(log_bucket, folder, filename)
+        full_path = storage.get_webserver_logs_path(is_seed, filename)
 
         # Serialize to JSON Lines (JSONL)
         jsonl_payload = "\n".join([json.dumps(row) for row in df["data"].to_list()]) + "\n"

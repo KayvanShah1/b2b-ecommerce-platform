@@ -55,6 +55,27 @@ class StorageLocation(str, Enum):
     GCS = "gcs"
 
 
+class DatasetStoragePaths(BaseProjectSettings):
+    # Existing source generator dataset roots
+    marketing_leads_prefix: str = "marketing"
+    webserver_logs_seed_prefix: str = "seed"
+    webserver_logs_daily_prefix: str = "daily"
+
+    # Ingestion dataset roots
+    ingestion_raw_root_prefix: str = "raw"
+    ingestion_metadata_root_prefix: str = "ingestion"
+
+    raw_postgres_prefix: str = "source=postgres"
+    raw_marketing_leads_prefix: str = "source=marketing-leads"
+    raw_webserver_logs_prefix: str = "source=webserver-logs"
+
+    metadata_watermarks_prefix: str = "watermarks"
+    metadata_runs_prefix: str = "runs"
+    metadata_lineage_prefix: str = "lineage"
+
+    model_config = SettingsConfigDict(env_prefix="STORAGE_DATASET_", extra="ignore")
+
+
 class StorageConfig(BaseProjectSettings):
     location: StorageLocation = StorageLocation.LOCAL
     prefix: str = "b2b-ec"
@@ -80,6 +101,7 @@ class StorageConfig(BaseProjectSettings):
     # Metadata bucket is for storing things like watermarks, schema snapshots, and other auxiliary data for ingestion processes.
     # It is separate from raw data to allow for different lifecycle policies and access controls.
     metadata_bucket: str = Field(default="metadata")
+    datasets: DatasetStoragePaths = Field(default_factory=DatasetStoragePaths)
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_")
 
@@ -100,8 +122,8 @@ class MotherDuckConfig(BaseProjectSettings):
 
 class DBTConfig(BaseProjectSettings):
     target: str = Field(default="dev", description="DBT target profile to use")
-    project_dir: Path = Field(default="b2b_ec_warehouse")
-    profiles_dir: Path = Field(default=".dbt")
+    project_dir: Path = Field(default=find_project_root() / "b2b_ec_warehouse")
+    profiles_dir: Path = Field(default=find_project_root() / ".dbt")
 
     model_config = SettingsConfigDict(env_prefix="DBT_")
 

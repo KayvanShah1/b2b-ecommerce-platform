@@ -2,7 +2,7 @@ import random
 from datetime import datetime, timedelta
 
 import polars as pl
-from b2b_ec_utils import get_logger, settings, timed_run
+from b2b_ec_utils import get_logger, timed_run
 from b2b_ec_utils.storage import storage
 from faker import Faker
 from pydantic import Field
@@ -99,13 +99,13 @@ class MarketingLeadsGenerator:
         finally:
             conn.close()
 
-    def _list_previous_leads_files(self, bucket: str):
-        pattern = storage.get_path(bucket, "marketing", "b2b_leads_*.csv")
+    def _list_previous_leads_files(self):
+        pattern = storage.get_marketing_leads_path("b2b_leads_*.csv")
         files = storage.glob(pattern)
         return sorted(files)
 
-    def _load_previous_leads(self, bucket: str):
-        files = self._list_previous_leads_files(bucket)
+    def _load_previous_leads(self):
+        files = self._list_previous_leads_files()
         if not files:
             return None
         latest = files[-1]
@@ -175,8 +175,7 @@ class MarketingLeadsGenerator:
     @timed_run
     def generate(self, count: int | None = None):
         """Generates a B2B marketing leads CSV with Company-level data."""
-        bucket = settings.storage.marketing_leads_bucket
-        prev_df = self._load_previous_leads(bucket)
+        prev_df = self._load_previous_leads()
         is_seed = prev_df is None or prev_df.is_empty()
         now_ts = datetime.now()
         month_probs = build_month_probability_vector(
@@ -275,7 +274,7 @@ class MarketingLeadsGenerator:
 
         # 2. Path Setup (Using your existing utility structure)
         filename = f"b2b_leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        full_path = storage.get_path(bucket, "marketing", filename)
+        full_path = storage.get_marketing_leads_path(filename)
 
         # 3. Write to Storage
         try:

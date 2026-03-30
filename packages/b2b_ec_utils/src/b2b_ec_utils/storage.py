@@ -52,6 +52,44 @@ class Storage:
 
         return "/".join([f"{self.protocol}{bucket_name}", *parts])
 
+    def get_marketing_leads_path(self, *parts: str) -> str:
+        cfg = self.cfg.storage
+        return self.get_path(cfg.marketing_leads_bucket, cfg.datasets.marketing_leads_prefix, *parts)
+
+    def get_webserver_logs_path(self, is_seed: bool, *parts: str) -> str:
+        cfg = self.cfg.storage
+        folder = cfg.datasets.webserver_logs_seed_prefix if is_seed else cfg.datasets.webserver_logs_daily_prefix
+        return self.get_path(cfg.webserver_logs_bucket, folder, *parts)
+
+    def get_raw_dataset_path(self, dataset: str, *parts: str) -> str:
+        cfg = self.cfg.storage
+        dataset_map = {
+            "postgres": cfg.datasets.raw_postgres_prefix,
+            "marketing_leads": cfg.datasets.raw_marketing_leads_prefix,
+            "webserver_logs": cfg.datasets.raw_webserver_logs_prefix,
+        }
+        if dataset not in dataset_map:
+            raise ValueError(f"Unknown raw dataset '{dataset}'")
+
+        return self.get_path(cfg.raw_data_bucket, cfg.datasets.ingestion_raw_root_prefix, dataset_map[dataset], *parts)
+
+    def get_metadata_path(self, category: str, *parts: str) -> str:
+        cfg = self.cfg.storage
+        category_map = {
+            "watermarks": cfg.datasets.metadata_watermarks_prefix,
+            "runs": cfg.datasets.metadata_runs_prefix,
+            "lineage": cfg.datasets.metadata_lineage_prefix,
+        }
+        if category not in category_map:
+            raise ValueError(f"Unknown metadata category '{category}'")
+
+        return self.get_path(
+            cfg.metadata_bucket,
+            cfg.datasets.ingestion_metadata_root_prefix,
+            category_map[category],
+            *parts,
+        )
+
     def open(self, path: str, mode: str = "rb", **kwargs):
         """Opens a file handle. Automatically creates parent dirs for local storage."""
         if self.location == "local" and ("w" in mode or "a" in mode):
