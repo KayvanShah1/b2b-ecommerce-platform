@@ -95,6 +95,10 @@ if __name__ == "__main__":
     # Quick test to verify storage initialization
     logger.info(f"Storage initialized with location: {storage.location}")
     # Create buckets in MiniO/S3 if they don't exist (idempotent)
-    buckets = [settings.storage.webserver_logs_bucket, settings.storage.marketing_leads_bucket]
+    buckets = [
+        settings.storage.webserver_logs_bucket,
+        settings.storage.marketing_leads_bucket,
+        settings.storage.raw_data_bucket,
+    ]
     for b in buckets:
         storage.create_bucket(b)
