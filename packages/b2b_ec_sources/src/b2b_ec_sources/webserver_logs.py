@@ -41,6 +41,12 @@ class WLGParameters(BaseSettings):
     DAILY_VOLUME_JITTER_SIGMA: float = 0.06
     MIN_DAILY_VOLUME_FACTOR: float = 0.70
     MAX_DAILY_VOLUME_FACTOR: float = 1.40
+    ENFORCE_HARD_DAILY_MIN: bool = True
+
+    UNAUTH_TRAFFIC_RATIO: float = 0.10
+    NEW_USER_LOOKBACK_DAYS: int = 2
+    AUTH_RETURNING_USER_RATIO: float = 0.75
+    AUTH_NEW_USER_RATIO: float = 0.25
 
     model_config = SettingsConfigDict(env_prefix="WEB_LOGS_", extra="ignore")
 
@@ -51,6 +57,14 @@ class WLGParameters(BaseSettings):
             raise ValueError("MIN_DAILY_VOLUME_FACTOR must be <= MAX_DAILY_VOLUME_FACTOR")
         if len(self.BASE_MONTH_WEIGHTS) != 12:
             raise ValueError("BASE_MONTH_WEIGHTS must contain 12 values")
+        if not 0.0 <= self.UNAUTH_TRAFFIC_RATIO <= 1.0:
+            raise ValueError("UNAUTH_TRAFFIC_RATIO must be between 0 and 1")
+        if self.NEW_USER_LOOKBACK_DAYS < 1:
+            raise ValueError("NEW_USER_LOOKBACK_DAYS must be >= 1")
+        if self.AUTH_RETURNING_USER_RATIO < 0 or self.AUTH_NEW_USER_RATIO < 0:
+            raise ValueError("AUTH_RETURNING_USER_RATIO and AUTH_NEW_USER_RATIO must be >= 0")
+        if self.AUTH_RETURNING_USER_RATIO + self.AUTH_NEW_USER_RATIO <= 0:
+            raise ValueError("AUTH_RETURNING_USER_RATIO + AUTH_NEW_USER_RATIO must be > 0")
 
 
 W = WLGParameters()
@@ -82,19 +96,46 @@ class WebLogGenerator:
             ("POST", "/api/v1/orders", [(201, 85), (400, 10), (401, 5)], 5),
         ]
 
-    def get_eligible_users(self, is_seed: bool):
+    def get_eligible_users(self):
         """Fetch users to ensure logs only exist for valid DB entities."""
         conn = get_connection()
         try:
             with conn.cursor() as cur:
                 query = "SELECT username, created_at FROM customers"
-                if not is_seed:
-                    query += " WHERE created_at > now() - interval '2 days'"
                 cur.execute(query)
                 results = cur.fetchall()
                 return [{"username": r[0], "created_at": r[1]} for r in results]
         finally:
             conn.close()
+
+    def _partition_users(self, users: list[dict], now_ts: datetime):
+        cutoff = now_ts - timedelta(days=W.NEW_USER_LOOKBACK_DAYS)
+        recent, returning = [], []
+        for u in users:
+            created_at = u.get("created_at")
+            if isinstance(created_at, datetime) and created_at >= cutoff:
+                recent.append(u)
+            else:
+                returning.append(u)
+        return returning, recent
+
+    def _pick_user(self, users: list[dict], returning_users: list[dict], recent_users: list[dict], is_seed: bool):
+        if is_seed:
+            return random.choice(users)
+
+        if returning_users and recent_users:
+            total_weight = W.AUTH_RETURNING_USER_RATIO + W.AUTH_NEW_USER_RATIO
+            p_returning = W.AUTH_RETURNING_USER_RATIO / total_weight
+            pool = returning_users if random.random() < p_returning else recent_users
+            return random.choice(pool)
+
+        if returning_users:
+            return random.choice(returning_users)
+
+        if recent_users:
+            return random.choice(recent_users)
+
+        return random.choice(users)
 
     @timed_run
     def generate(self, log_count=None):
@@ -111,16 +152,19 @@ class WebLogGenerator:
             month_jitter_sigma=W.MONTH_JITTER_SIGMA,
         )
 
-        users = self.get_eligible_users(is_seed)
+        users = self.get_eligible_users()
         if not users:
             logger.error("No users found in Postgres. Seed the database first.")
             return
+        returning_users, recent_users = self._partition_users(users, now_ts)
 
         # Volume: 100k for initial history; daily increments now follow seasonal volume
-        count = log_count or (
-            W.SEED_LOG_COUNT
-            if is_seed
-            else sample_seasonal_volume(
+        if log_count is not None:
+            count = log_count
+        elif is_seed:
+            count = W.SEED_LOG_COUNT
+        else:
+            sampled_count = sample_seasonal_volume(
                 min_count=W.DAILY_LOG_MIN,
                 max_count=W.DAILY_LOG_MAX,
                 now_ts=now_ts,
@@ -131,16 +175,16 @@ class WebLogGenerator:
                 min_factor=W.MIN_DAILY_VOLUME_FACTOR,
                 max_factor=W.MAX_DAILY_VOLUME_FACTOR,
             )
-        )
+            count = max(W.DAILY_LOG_MIN, sampled_count) if W.ENFORCE_HARD_DAILY_MIN else sampled_count
         logs = []
 
         logger.info(f"Generating {count} JSONL logs ({'SEED' if is_seed else 'DAILY'})")
 
         for _ in range(count):
-            user_meta = random.choice(users)
+            user_meta = self._pick_user(users, returning_users, recent_users, is_seed)
 
-            # 10% unauthenticated traffic
-            username = "-" if random.random() < 0.10 else user_meta["username"]
+            # Unauthenticated traffic share remains configurable
+            username = "-" if random.random() < W.UNAUTH_TRAFFIC_RATIO else user_meta["username"]
 
             # Timestamp follows seasonal distribution but stays after user creation
             window_days = W.SEED_DISTRIBUTION_DAYS if is_seed else W.DAILY_DISTRIBUTION_DAYS
