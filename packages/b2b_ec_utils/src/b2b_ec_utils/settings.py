@@ -74,7 +74,11 @@ class StorageConfig(BaseProjectSettings):
     # Buckets (for S3/MinIO/GCS) - these will be prefixed with the 'prefix' value
     webserver_logs_bucket: str = Field(default="webserver-logs")
     marketing_leads_bucket: str = Field(default="marketing-leads")
+    # Raw data bucket is for storing ingested data in its original form read from source systems, before any transformations or processing.
+    # It is separate from metadata to allow for different lifecycle policies and access controls.
     raw_data_bucket: str = Field(default="raw-data")
+    # Metadata bucket is for storing things like watermarks, schema snapshots, and other auxiliary data for ingestion processes.
+    # It is separate from raw data to allow for different lifecycle policies and access controls.
     metadata_bucket: str = Field(default="metadata")
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_")
