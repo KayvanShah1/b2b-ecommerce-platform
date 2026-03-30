@@ -1,9 +1,8 @@
+from b2b_ec_sources import get_connection
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.settings import settings
 from b2b_ec_utils.storage import storage
 from rich.console import Console
-
-from b2b_ec_sources import get_connection
 
 logger = get_logger("SourceDataReset")
 console = Console()
@@ -38,6 +37,8 @@ def reset_storage():
     buckets = [
         settings.storage.marketing_leads_bucket,  # Marketing Leads
         settings.storage.webserver_logs_bucket,  # Weblogs
+        settings.storage.raw_data_bucket,  # Raw data dumps
+        settings.storage.metadata_bucket,  # Metadata (if used for generation)
     ]
 
     for bucket in buckets:

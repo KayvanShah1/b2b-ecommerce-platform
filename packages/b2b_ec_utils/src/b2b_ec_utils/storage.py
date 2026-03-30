@@ -99,6 +99,7 @@ if __name__ == "__main__":
         settings.storage.webserver_logs_bucket,
         settings.storage.marketing_leads_bucket,
         settings.storage.raw_data_bucket,
+        settings.storage.metadata_bucket,
     ]
     for b in buckets:
         storage.create_bucket(b)

@@ -75,6 +75,7 @@ class StorageConfig(BaseProjectSettings):
     webserver_logs_bucket: str = Field(default="webserver-logs")
     marketing_leads_bucket: str = Field(default="marketing-leads")
     raw_data_bucket: str = Field(default="raw-data")
+    metadata_bucket: str = Field(default="metadata")
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_")
 
@@ -82,6 +83,7 @@ class StorageConfig(BaseProjectSettings):
         self.webserver_logs_bucket = f"{self.prefix}-webserver-logs"
         self.marketing_leads_bucket = f"{self.prefix}-marketing-leads"
         self.raw_data_bucket = f"{self.prefix}-raw-data"
+        self.metadata_bucket = f"{self.prefix}-metadata"
 
 
 class MotherDuckConfig(BaseProjectSettings):
