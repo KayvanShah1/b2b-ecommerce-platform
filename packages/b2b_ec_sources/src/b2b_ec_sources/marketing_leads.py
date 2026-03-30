@@ -1,5 +1,5 @@
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import polars as pl
 from b2b_ec_utils import get_logger, settings, timed_run
@@ -9,6 +9,11 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from b2b_ec_sources import get_connection, get_iso_data
+from b2b_ec_sources.temporal_sampling import (
+    build_month_probability_vector,
+    sample_seasonal_volume,
+    sample_timestamp_within_window,
+)
 
 fake = Faker()
 logger = get_logger("MarketingLeadsGen")
@@ -34,6 +39,21 @@ class MarketingLeadsParameters(BaseSettings):
     min_daily_leads: int = Field(default=50, ge=1)
     max_daily_leads: int = Field(default=1500, ge=1)
 
+    seed_distribution_days: int = Field(default=365, ge=1)
+    daily_distribution_days: int = Field(default=30, ge=1)
+    base_month_weights: list[float] = [1.0] * 12
+    seasonality_amplitude: float = Field(default=0.30, ge=0.0, le=0.95)
+    seasonality_peak_month: int = Field(default=11, ge=1, le=12)
+    month_jitter_sigma: float = Field(default=0.10, ge=0.0)
+    intra_month_skew_alpha: float = Field(default=2.2, gt=0.0)
+    intra_month_skew_beta: float = Field(default=2.8, gt=0.0)
+    day_jitter_std: float = Field(default=1.0, ge=0.0)
+    hour_jitter_std: float = Field(default=2.0, ge=0.0)
+    clamp_jitter_to_bucket: bool = True
+    daily_volume_jitter_sigma: float = Field(default=0.08, ge=0.0)
+    min_daily_volume_factor: float = Field(default=0.70, ge=0.0)
+    max_daily_volume_factor: float = Field(default=1.40, ge=0.0)
+
     carryover_ratio: float = Field(default=0.35, ge=0.0, le=1.0)
     fallback_iso_codes: list[str] = ["US", "IN", "QA", "AE", "GB", "DE"]
 
@@ -44,6 +64,10 @@ class MarketingLeadsParameters(BaseSettings):
             raise ValueError("daily_leads_per_company_min must be <= daily_leads_per_company_max")
         if self.min_daily_leads > self.max_daily_leads:
             raise ValueError("min_daily_leads must be <= max_daily_leads")
+        if self.min_daily_volume_factor > self.max_daily_volume_factor:
+            raise ValueError("min_daily_volume_factor must be <= max_daily_volume_factor")
+        if len(self.base_month_weights) != 12:
+            raise ValueError("base_month_weights must contain 12 values")
 
 
 MLG = MarketingLeadsParameters()
@@ -104,7 +128,7 @@ class MarketingLeadsGenerator:
             return "Nurturing"
         return current_status
 
-    def _suggest_count(self, client_count: int, is_seed: bool, prev_count: int) -> int:
+    def _suggest_count(self, client_count: int, is_seed: bool, prev_count: int, now_ts: datetime) -> int:
         if is_seed:
             base = max(self.params.min_seed_leads, int(client_count * self.params.seed_leads_per_company))
             return int(base * random.uniform(0.8, 1.2))
@@ -114,16 +138,39 @@ class MarketingLeadsGenerator:
             * random.uniform(self.params.daily_leads_per_company_min, self.params.daily_leads_per_company_max)
         )
         from_previous = int(prev_count * random.uniform(0.05, 0.15)) if prev_count else 0
-        base = max(self.params.min_daily_leads, per_company, from_previous)
-        return min(self.params.max_daily_leads, base)
+        baseline = min(self.params.max_daily_leads, max(self.params.min_daily_leads, per_company, from_previous))
+        range_min = max(self.params.min_daily_leads, int(round(baseline * 0.8)))
+        range_max = min(self.params.max_daily_leads, int(round(baseline * 1.2)))
+        return sample_seasonal_volume(
+            min_count=range_min,
+            max_count=max(range_min, range_max),
+            now_ts=now_ts,
+            base_month_weights=self.params.base_month_weights,
+            seasonality_amplitude=self.params.seasonality_amplitude,
+            seasonality_peak_month=self.params.seasonality_peak_month,
+            volume_jitter_sigma=self.params.daily_volume_jitter_sigma,
+            min_factor=self.params.min_daily_volume_factor,
+            max_factor=self.params.max_daily_volume_factor,
+        )
 
     def _new_lead_status(self, is_existing_company: bool) -> str:
         if is_existing_company:
             return random.choices(["Nurturing", "Qualified", "Contacted"], weights=[0.5, 0.3, 0.2])[0]
         return random.choices(["New", "Contacted", "Qualified"], weights=[0.6, 0.3, 0.1])[0]
 
-    def _random_created_at(self, is_seed: bool) -> datetime:
-        return fake.date_time_between(start_date="-1y" if is_seed else "-30d", end_date="now")
+    def _random_created_at(self, is_seed: bool, now_ts: datetime, month_probs) -> datetime:
+        window_days = self.params.seed_distribution_days if is_seed else self.params.daily_distribution_days
+        window_start = now_ts - timedelta(days=max(1, int(window_days)))
+        return sample_timestamp_within_window(
+            window_start=window_start,
+            window_end=now_ts,
+            month_probs=month_probs,
+            intra_month_skew_alpha=self.params.intra_month_skew_alpha,
+            intra_month_skew_beta=self.params.intra_month_skew_beta,
+            day_jitter_std=self.params.day_jitter_std,
+            hour_jitter_std=self.params.hour_jitter_std,
+            clamp_jitter_to_bucket=self.params.clamp_jitter_to_bucket,
+        )
 
     @timed_run
     def generate(self, count: int | None = None):
@@ -131,10 +178,17 @@ class MarketingLeadsGenerator:
         bucket = settings.storage.marketing_leads_bucket
         prev_df = self._load_previous_leads(bucket)
         is_seed = prev_df is None or prev_df.is_empty()
+        now_ts = datetime.now()
+        month_probs = build_month_probability_vector(
+            base_month_weights=self.params.base_month_weights,
+            seasonality_amplitude=self.params.seasonality_amplitude,
+            seasonality_peak_month=self.params.seasonality_peak_month,
+            month_jitter_sigma=self.params.month_jitter_sigma,
+        )
 
         existing_companies = self.get_existing_companies()
         prev_count = 0 if prev_df is None else prev_df.height
-        target_count = count or self._suggest_count(len(existing_companies), is_seed, prev_count)
+        target_count = count or self._suggest_count(len(existing_companies), is_seed, prev_count, now_ts)
 
         logger.info(f"Generating {target_count} B2B marketing leads ({'SEED' if is_seed else 'DAILY'})")
 
@@ -150,11 +204,11 @@ class MarketingLeadsGenerator:
                 new_status = self._advance_status(current_status)
                 status_changed = new_status != current_status
 
-                created_at = row.get("created_at") or self._random_created_at(is_seed=True).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+                created_at = row.get("created_at") or self._random_created_at(
+                    is_seed=True, now_ts=now_ts, month_probs=month_probs
+                ).strftime("%Y-%m-%d %H:%M:%S")
                 status_updated_at = (
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S") if status_changed else row.get("status_updated_at")
+                    now_ts.strftime("%Y-%m-%d %H:%M:%S") if status_changed else row.get("status_updated_at")
                 )
                 last_activity_at = status_updated_at or row.get("last_activity_at") or created_at
 
@@ -191,7 +245,7 @@ class MarketingLeadsGenerator:
                 company_name = fake.company()
                 is_prospect = True
 
-            created_at_dt = self._random_created_at(is_seed=is_seed)
+            created_at_dt = self._random_created_at(is_seed=is_seed, now_ts=now_ts, month_probs=month_probs)
             created_at = created_at_dt.strftime("%Y-%m-%d %H:%M:%S")
             status = self._new_lead_status(use_existing_company)
             status_updated_at = created_at
