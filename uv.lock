@@ -273,6 +273,7 @@ name = "b2b-ec-etl"
 version = "0.1.0"
 source = { editable = "b2b_ec_etl" }
 dependencies = [
+    { name = "b2b-ec-sources" },
     { name = "b2b-ec-utils" },
     { name = "dagster" },
     { name = "dagster-dbt" },
@@ -290,6 +291,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "b2b-ec-sources", editable = "packages/b2b_ec_sources" },
     { name = "b2b-ec-utils", editable = "packages/b2b_ec_utils" },
     { name = "dagster", specifier = "==1.12.20" },
     { name = "dagster-dbt", specifier = ">=0.28.1" },
