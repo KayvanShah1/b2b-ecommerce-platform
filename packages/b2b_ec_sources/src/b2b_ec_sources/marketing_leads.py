@@ -31,13 +31,13 @@ class MarketingLeadsParameters(BaseSettings):
     statuses: list[str] = ["New", "Contacted", "Qualified", "Lost", "Nurturing"]
 
     existing_company_ratio: float = Field(default=0.70, ge=0.0, le=1.0)
-    seed_leads_per_company: int = Field(default=4, ge=1)
-    min_seed_leads: int = Field(default=200, ge=1)
+    seed_leads_per_company: int = Field(default=25, ge=1)
+    min_seed_leads: int = Field(default=1500, ge=1)
 
-    daily_leads_per_company_min: float = Field(default=0.5, ge=0.0)
-    daily_leads_per_company_max: float = Field(default=1.5, ge=0.0)
-    min_daily_leads: int = Field(default=50, ge=1)
-    max_daily_leads: int = Field(default=1500, ge=1)
+    daily_leads_per_company_min: float = Field(default=2.0, ge=0.0)
+    daily_leads_per_company_max: float = Field(default=6.0, ge=0.0)
+    min_daily_leads: int = Field(default=100, ge=1)
+    max_daily_leads: int = Field(default=950, ge=1)
 
     seed_distribution_days: int = Field(default=365, ge=1)
     daily_distribution_days: int = Field(default=30, ge=1)
