@@ -1,5 +1,6 @@
 import json
 import random
+import uuid
 from datetime import datetime, timedelta
 
 import polars as pl
@@ -214,6 +215,7 @@ class WebLogGenerator:
 
             # Construct the JSON Record
             log_entry = {
+                "event_id": uuid.uuid4().hex,
                 "remote_host": fake.ipv4(),
                 "ident": "-",
                 "username": username,
