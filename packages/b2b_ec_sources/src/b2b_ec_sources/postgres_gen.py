@@ -10,6 +10,12 @@ from faker import Faker
 from pydantic import BaseModel
 
 from b2b_ec_sources import get_connection, get_iso_data
+from b2b_ec_sources.temporal_sampling import (
+    build_month_probability_vector,
+    ordered_bounds,
+    sample_seasonal_volume,
+    sample_timestamp_within_window,
+)
 
 
 # --- CONFIGURATION ---
@@ -18,14 +24,14 @@ class GeneratorParameters(BaseModel):
     seed_total_companies: int = 100
     seed_supplier_ratio: float = 0.20
     seed_total_customers: int = 10000
-    seed_total_products: int = 500
+    seed_total_products: int = 700
     seed_total_orders: int = 100000
-    catalog_size_seed: int = 100
+    catalog_size_seed: int = 250
 
     # Organic Growth (Steady State)
-    min_target_cust_growth: float = 0.05
+    min_target_cust_growth: float = 0.01
     max_target_cust_growth: float = 0.10
-    min_target_prod_growth: float = 0.02
+    min_target_prod_growth: float = 0.01
     max_target_prod_growth: float = 0.05
 
     # Dynamic Evolution Engine
@@ -39,13 +45,37 @@ class GeneratorParameters(BaseModel):
     # Financials
     min_markup_percent: float = 1.20
     max_markup_percent: float = 2.50
+    min_base_price: float = 10.0
+    max_base_price: float = 1000.0
+
+    # Incremental (daily) order volume targets in steady state
     min_inc_orders: int = 100
-    max_inc_orders: int = 3000
+    max_inc_orders: int = 450
+    min_items_per_order: int = 1
+    max_items_per_order: int = 6
+    min_item_quantity: int = 1
+    max_item_quantity: int = 5
+    new_supplier_products: int = 20
 
     # Statuses & Returns
     seed_status_weights: list = [0.93, 0.03, 0.04]  # COMPLETED, CANCELLED, RETURNED
     min_return_rate: float = 0.02
     max_return_rate: float = 0.06
+
+    # Temporal Order Distribution (Monthly + Seasonality + Skew + Jitter)
+    seed_distribution_days: int = 365
+    incremental_distribution_days: int = 60
+    base_month_weights: list[float] = [1.0] * 12  # Jan..Dec baseline preference
+    seasonality_amplitude: float = 0.35  # 0.0-0.95, scales cosine seasonality curve
+    seasonality_peak_month: int = 11  # 1..12, month with highest seasonal lift
+    month_jitter_sigma: float = 0.20  # multiplicative month-to-month volatility
+    incremental_volume_jitter_sigma: float = 0.08  # daily volume volatility around seasonal target
+    min_incremental_volume_factor: float = 0.60  # clamp factor against min_inc_orders
+    max_incremental_volume_factor: float = 1.60  # clamp factor against max_inc_orders
+    intra_month_skew_alpha: float = 2.2  # Beta(alpha, beta) left/right month skew
+    intra_month_skew_beta: float = 2.8
+    day_jitter_std: float = 1.5  # additive noise in days
+    hour_jitter_std: float = 3.0  # additive noise in hours
 
 
 cfg = GeneratorParameters()
@@ -140,6 +170,70 @@ def generate_customer_data(company_cuit, backdate_from="-1y"):
     }
 
 
+def _sample_base_price() -> float:
+    min_price, max_price = ordered_bounds(float(cfg.min_base_price), float(cfg.max_base_price))
+    return round(random.uniform(min_price, max_price), 2)
+
+
+def _sample_items_per_order() -> int:
+    min_items, max_items = ordered_bounds(int(cfg.min_items_per_order), int(cfg.max_items_per_order))
+    return random.randint(min_items, max_items)
+
+
+def _sample_item_quantity() -> int:
+    min_qty, max_qty = ordered_bounds(int(cfg.min_item_quantity), int(cfg.max_item_quantity))
+    return random.randint(min_qty, max_qty)
+
+
+def _build_calendar_month_probabilities() -> np.ndarray:
+    return build_month_probability_vector(
+        base_month_weights=cfg.base_month_weights,
+        seasonality_amplitude=cfg.seasonality_amplitude,
+        seasonality_peak_month=cfg.seasonality_peak_month,
+        month_jitter_sigma=cfg.month_jitter_sigma,
+    )
+
+
+def _sample_incremental_order_volume(now_ts: datetime) -> int:
+    return sample_seasonal_volume(
+        min_count=cfg.min_inc_orders,
+        max_count=cfg.max_inc_orders,
+        now_ts=now_ts,
+        base_month_weights=cfg.base_month_weights,
+        seasonality_amplitude=cfg.seasonality_amplitude,
+        seasonality_peak_month=cfg.seasonality_peak_month,
+        volume_jitter_sigma=cfg.incremental_volume_jitter_sigma,
+        min_factor=cfg.min_incremental_volume_factor,
+        max_factor=cfg.max_incremental_volume_factor,
+    )
+
+
+def _get_distribution_window_start(now_ts: datetime, is_seed: bool) -> datetime:
+    window_days = cfg.seed_distribution_days if is_seed else cfg.incremental_distribution_days
+    return now_ts - timedelta(days=max(1, int(window_days)))
+
+
+def _sample_order_date_with_temporal_pattern(
+    customer_created_at: datetime | None, now_ts: datetime, month_probs: np.ndarray, is_seed: bool
+) -> datetime:
+    window_start = _get_distribution_window_start(now_ts, is_seed)
+    if customer_created_at is None:
+        customer_created_at = window_start
+    effective_start = max(customer_created_at, window_start)
+    if effective_start >= now_ts:
+        return now_ts
+    return sample_timestamp_within_window(
+        window_start=effective_start,
+        window_end=now_ts,
+        month_probs=month_probs,
+        intra_month_skew_alpha=cfg.intra_month_skew_alpha,
+        intra_month_skew_beta=cfg.intra_month_skew_beta,
+        day_jitter_std=cfg.day_jitter_std,
+        hour_jitter_std=cfg.hour_jitter_std,
+        clamp_jitter_to_bucket=False,
+    )
+
+
 # --- BATCH GENERATOR ---
 def generate_batch(conn, num_orders=1000, is_seed=False):
     stats = {"cust": 0, "prod": 0, "returns": 0, "new_co": 0, "price_upd": 0}
@@ -201,11 +295,11 @@ def generate_batch(conn, num_orders=1000, is_seed=False):
                                     {
                                         "name": f"SKU_{fake.word()}",
                                         "supplier_cuit": new_cuit,
-                                        "base_price": round(random.uniform(10, 500), 2),
+                                        "base_price": _sample_base_price(),
                                         "created_at": now_ts,
                                         "updated_at": now_ts,
                                     }
-                                    for _ in range(20)
+                                    for _ in range(max(1, int(cfg.new_supplier_products)))
                                 ]
                             ),
                             "products",
@@ -258,7 +352,7 @@ def generate_batch(conn, num_orders=1000, is_seed=False):
                         {
                             "name": f"Prod_{fake.word()}",
                             "supplier_cuit": random.choice(sup_cuits),
-                            "base_price": round(random.uniform(10, 500), 2),
+                            "base_price": _sample_base_price(),
                             "created_at": now_ts,
                             "updated_at": now_ts,
                         }
@@ -294,32 +388,63 @@ def generate_batch(conn, num_orders=1000, is_seed=False):
 
     # 4. TRANSACTIONAL GENERATION
     order_list, items_by_order = [], []
-    c_ids = list(cust_info.keys())
-    for _ in range(num_orders):
-        cid = int(np.random.choice(c_ids))
-        meta = cust_info[cid]
+    now_ts = datetime.now()
+    calendar_month_probs = _build_calendar_month_probabilities()
+    valid_customers = []
+    for cid, meta in cust_info.items():
         cat = catalogs.get(meta["cuit"], [])
         if not cat:
             continue
+        created_at = meta["created_at"] if meta["created_at"] is not None else datetime.min
+        valid_customers.append({"id": cid, "cuit": meta["cuit"], "created_at": created_at})
+
+    if not valid_customers:
+        logger.warning("BATCH: No eligible customers with catalogs found. Skipping order generation.")
+        return
+
+    valid_customers.sort(key=lambda x: x["created_at"])
+    sampled_order_dates = [
+        _sample_order_date_with_temporal_pattern(
+            customer_created_at=None,
+            now_ts=now_ts,
+            month_probs=calendar_month_probs,
+            is_seed=is_seed,
+        )
+        for _ in range(num_orders)
+    ]
+    sampled_order_dates.sort()
+
+    customer_cursor = 0
+    eligible_customers = []
+    for o_date in sampled_order_dates:
+        while customer_cursor < len(valid_customers) and valid_customers[customer_cursor]["created_at"] <= o_date:
+            eligible_customers.append(valid_customers[customer_cursor])
+            customer_cursor += 1
+        if not eligible_customers:
+            continue
+
+        chosen_customer = random.choice(eligible_customers)
+        cid = chosen_customer["id"]
+        customer_cuit = chosen_customer["cuit"]
+        cat = catalogs[customer_cuit]
 
         status = random.choices(
             ["COMPLETED", "CANCELLED", "RETURNED" if is_seed else "COMPLETED"],
             weights=cfg.seed_status_weights if is_seed else [0.97, 0.03, 0],
         )[0]
-        o_date = fake.date_time_between(start_date=meta["created_at"], end_date="now")
 
-        num_items = random.randint(1, 6)
+        num_items = _sample_items_per_order()
         selected = np.random.choice(len(cat), size=min(num_items, len(cat)), replace=False)
         total, current_items = 0, []
         for idx in selected:
             pid, price = cat[idx]
-            qty = random.randint(1, 5)
+            qty = _sample_item_quantity()
             total += qty * price
             current_items.append({"product_id": pid, "quantity": qty, "unit_price": price})
 
         order_list.append(
             {
-                "company_cuit": meta["cuit"],
+                "company_cuit": customer_cuit,
                 "customer_id": cid,
                 "status": status,
                 "order_date": o_date,
@@ -329,6 +454,11 @@ def generate_batch(conn, num_orders=1000, is_seed=False):
             }
         )
         items_by_order.append(current_items)
+
+    if len(order_list) < num_orders:
+        logger.warning(
+            f"BATCH: Generated {len(order_list)} of {num_orders} requested orders due to customer eligibility by date."
+        )
 
     pg_bulk_copy(conn, pl.DataFrame(order_list), "orders")
 
@@ -389,7 +519,7 @@ def run_source_generation():
                 {
                     "name": f"P_{i}",
                     "supplier_cuit": random.choice(sup_cuits),
-                    "base_price": round(random.uniform(10, 500), 2),
+                    "base_price": _sample_base_price(),
                     "created_at": ts,
                     "updated_at": ts,
                 }
@@ -429,7 +559,9 @@ def run_source_generation():
         generate_batch(conn, num_orders=cfg.seed_total_orders, is_seed=True)
     else:
         logger.info("EVOLUTION: Running Dynamic Market Cycle...")
-        generate_batch(conn, num_orders=random.randint(cfg.min_inc_orders, cfg.max_inc_orders), is_seed=False)
+        inc_orders = _sample_incremental_order_volume(datetime.now())
+        logger.info(f"EVOLUTION: Seasonal daily order target = {inc_orders}")
+        generate_batch(conn, num_orders=inc_orders, is_seed=False)
     conn.close()
 
 
