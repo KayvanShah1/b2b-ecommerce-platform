@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from dagster import AssetExecutionContext, MaterializeResult, asset
 
 
-@asset(group_name="ingestion", required_resource_keys={"ingestion_resource"}, kinds=["python", "postgres"])
+@asset(group_name="raw_data_capture", required_resource_keys={"ingestion_resource"}, kinds=["python", "postgres"])
 def raw_capture_postgres(context: AssetExecutionContext) -> list[dict]:
     run_ts = datetime.now(timezone.utc)
     manifests = context.resources.ingestion_resource.raw_capture_postgres(run_id=context.run_id, run_ts=run_ts)
@@ -12,7 +12,7 @@ def raw_capture_postgres(context: AssetExecutionContext) -> list[dict]:
     return manifests
 
 
-@asset(group_name="ingestion", required_resource_keys={"ingestion_resource"}, kinds=["python", "s3"])
+@asset(group_name="raw_data_capture", required_resource_keys={"ingestion_resource"}, kinds=["python", "s3"])
 def raw_capture_files(context: AssetExecutionContext) -> dict:
     run_ts = datetime.now(timezone.utc)
     manifests = context.resources.ingestion_resource.raw_capture_files(run_id=context.run_id, run_ts=run_ts)
@@ -22,7 +22,7 @@ def raw_capture_files(context: AssetExecutionContext) -> dict:
 
 
 @asset(
-    group_name="ingestion",
+    group_name="light_processing",
     required_resource_keys={"ingestion_resource"},
     deps=[raw_capture_postgres],
     kinds=["polars", "s3"],
@@ -46,7 +46,7 @@ def process_postgres(
 
 
 @asset(
-    group_name="ingestion",
+    group_name="light_processing",
     required_resource_keys={"ingestion_resource"},
     deps=[raw_capture_files],
     kinds=["polars", "s3"],
@@ -70,7 +70,7 @@ def process_files(
 
 
 @asset(
-    group_name="ingestion",
+    group_name="incremental_load",
     required_resource_keys={"ingestion_resource", "duckdb"},
     deps=[process_postgres, process_files],
     kinds=["python", "duckdb"],
