@@ -1,4 +1,7 @@
 # B2B Data Sources: Generation and Evolution
+[![Black-Box Statistical](https://img.shields.io/badge/Modeling-Statistical%20Black--Box-black?style=flat-square)](https://img.shields.io/)
+[![Synthetic Data Generator](https://img.shields.io/badge/Data-Synthetic%20Generator-0b7285?style=flat-square)](https://img.shields.io/)
+[![Seasonality Enabled](https://img.shields.io/badge/Temporal-Seasonality%20Enabled-1d4ed8?style=flat-square)](https://img.shields.io/)
 
 This package provides data generators for the B2B ecommerce platform. It creates a relational baseline in Postgres and emits supporting marketing leads and webserver logs to the configured storage system. The result is a realistic, evolving dataset that is consistent across sources.
 
@@ -17,16 +20,25 @@ Data value:
 ## How It Works (Simple)
 
 1. Seed the relational baseline in Postgres if it does not exist.
-2. On later runs, evolve the same dataset with new entities, pricing shifts, and returns.
-3. Generate marketing leads and webserver logs that are tied back to the Postgres entities.
+2. On later runs, evolve the same dataset with new entities, pricing shifts, returns, and seasonal volume.
+3. Generate webserver logs and marketing leads tied back to Postgres entities.
+4. Reuse a shared temporal sampling engine so timestamps and day-level volumes look realistic across generators.
 
 ## Architecture Overview
 
 ```mermaid
 flowchart LR
-  Settings[.env config] --> PostgresGen[postgres_gen.py]
+  Settings[Generator Configurations] --> Orchestrator[generate_all.py]
+  Settings --> PostgresGen[postgres_gen.py]
   Settings --> LeadsGen[marketing_leads.py]
   Settings --> WebLogsGen[webserver_logs.py]
+  Temporal[temporal_sampling.py] --> PostgresGen
+  Temporal --> LeadsGen
+  Temporal --> WebLogsGen
+
+  Orchestrator --> PostgresGen
+  Orchestrator --> WebLogsGen
+  Orchestrator --> LeadsGen
 
   PostgresGen -->|Postgres| Postgres[(B2B Source DB)]
   PostgresGen -->|ISO Codes| Countries[ref_countries]
@@ -49,13 +61,29 @@ Required Postgres environment variables:
 
 Storage configuration:
 1. `STORAGE_LOCATION` (local, minio, s3, gcs)
-2. `MINIO_ENDPOINT_URL` or `S3_ENDPOINT_URL` (if applicable)
-3. `MINIO_ROOT_USER` / `AWS_ACCESS_KEY_ID`
-4. `MINIO_ROOT_PASSWORD` / `AWS_SECRET_ACCESS_KEY`
+2. `STORAGE_MINIO_ENDPOINT_URL` or `STORAGE_S3_ENDPOINT_URL` (if applicable)
+3. `STORAGE_MINIO_ROOT_USER` or `STORAGE_S3_ACCESS_KEY_ID`
+4. `STORAGE_MINIO_ROOT_PASSWORD` or `STORAGE_S3_SECRET_ACCESS_KEY`
 
 Default buckets:
 1. Webserver logs: `b2b-ec-webserver-logs`
 2. Marketing leads: `b2b-ec-marketing-leads`
+
+Generator tuning (env prefixes):
+1. Marketing leads: `MARKETING_LEADS_*`
+2. Webserver logs: `WEB_LOGS_*`
+
+### MinIO Quick Setup
+
+```bash
+# from repository root
+docker compose up -d minio
+uv run python packages/b2b_ec_utils/src/b2b_ec_utils/storage.py
+```
+
+MinIO endpoints:
+1. API: `http://localhost:9000`
+2. Console: `http://localhost:9001`
 
 ## Generator: Relational Source DB (`postgres_gen.py`)
 
@@ -97,9 +125,9 @@ When the `orders` table does not exist, the generator performs a full historical
 Defaults (can be adjusted in `postgres_gen.py`):
 1. 100 companies
 2. 10,000 customers
-3. 500 products
+3. 700 products
 4. 100,000 orders
-5. 100 catalog items per client
+5. 250 catalog items per client
 
 ```mermaid
 flowchart TD
@@ -120,9 +148,10 @@ If the schema exists, each run simulates a "market day":
 3. Organic growth adds new customers and new products.
 4. Some completed orders from 3-7 days ago are marked as returned.
 5. New orders and order items are generated from current state.
+6. Daily order volume is seasonally sampled (default range target: 100-450).
 
 ```mermaid
-flowchart LR
+flowchart TD
   E0[Start Evolution Run] --> E1[New companies + price shifts]
   E1 --> E2[Organic growth: customers + products]
   E2 --> E3[Retroactive returns: 3-7 days]
@@ -141,13 +170,16 @@ flowchart LR
 Purpose: Generate B2B marketing leads as CSV files in the configured storage system.
 
 Key behavior:
-1. About 30 percent of leads map to existing client companies (when available).
-2. Lead sources and statuses simulate a realistic B2B funnel.
-3. Country codes align with Postgres `ref_countries` for clean joins.
+1. By default, about 70 percent of new leads map to existing client companies (when available).
+2. Seed mode creates a historical baseline; daily mode carries over a subset of prior leads and advances statuses.
+3. Lead sources and statuses simulate a realistic B2B funnel.
+4. Country codes align with Postgres `ref_countries` for clean joins.
+5. Lead timestamps and daily lead volume follow monthly seasonality plus jitter.
 
 ```mermaid
 flowchart LR
   DB[(Postgres: companies)] -->|Optional lookup| LeadGen[MarketingLeadsGenerator]
+  Prev[(Previous leads CSV)] --> LeadGen
   LeadGen -->|CSV| Storage[(Marketing Leads Bucket)]
 ```
 
@@ -169,19 +201,20 @@ Purpose: Generate structured JSONL access logs tied to real customer accounts.
 
 Seed vs daily behavior:
 1. If no seed logs exist, it generates a large historical seed file.
-2. If seed logs exist, it generates a smaller daily increment.
+2. If seed logs exist, it generates a smaller daily increment with seasonal volume sampling.
 
 ```mermaid
 flowchart TD
-  S0["Check seed/*.jsonl"] -->|None| S1[Seed mode: 100k logs]
+  S0["Check Seed Data"] -->|None| S1[Seed mode: 100k logs]
   S0 -->|Exists| S2[Daily mode: 5k-10k logs]
 ```
 
 Log semantics:
 1. Logs are created only for valid customer usernames.
 2. About 10 percent of traffic is unauthenticated.
-3. Endpoints and status codes are weighted for realistic production traffic.
-4. Timestamps always occur after the corresponding customer account creation time.
+3. Authenticated traffic is biased toward returning users while still sampling recent new users.
+4. Endpoints and status codes are weighted for realistic production traffic.
+5. Timestamps always occur after the corresponding customer account creation time.
 
 ```mermaid
 flowchart LR
@@ -196,17 +229,27 @@ Storage location:
 
 ## How To Run (Simplified)
 
-1. Seed or evolve the relational database:
-   `python -m b2b_ec_sources.postgres_gen`
-2. Generate marketing leads:
-   `python -m b2b_ec_sources.marketing_leads`
-3. Generate webserver logs:
-   `python -m b2b_ec_sources.webserver_logs`
+Recommended one-shot:
+```bash
+uv run python packages/b2b_ec_sources/src/scripts/generate_all.py
+```
+
+Individual commands:
+```bash
+# 1) Seed or evolve the relational database
+uv run python -m b2b_ec_sources.postgres_gen
+
+# 2) Generate webserver logs
+uv run python -m b2b_ec_sources.webserver_logs
+
+# 3) Generate marketing leads
+uv run python -m b2b_ec_sources.marketing_leads
+```
 
 Recommended order:
 1. Postgres generator first (companies and customers must exist).
-2. Marketing leads (reuses companies when available).
-3. Webserver logs (reuses customers).
+2. Webserver logs (reuses customers).
+3. Marketing leads (reuses companies when available and can carry over prior day status).
 
 ## How To Use This Package (Business and Data)
 

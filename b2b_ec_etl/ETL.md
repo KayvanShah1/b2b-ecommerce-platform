@@ -1,4 +1,7 @@
 # ETL Architecture
+[![Orchestration-Dagster](https://img.shields.io/badge/Orchestration-Dagster-4f46e5?style=flat-square)](https://dagster.io/)
+[![Incremental-ETL](https://img.shields.io/badge/Pipeline-Incremental%20ETL-0f766e?style=flat-square)](https://img.shields.io/)
+[![Warehouse-MotherDuck%20%2F%20DuckDB](https://img.shields.io/badge/Warehouse-MotherDuck%20%2F%20DuckDB-f97316?style=flat-square)](https://motherduck.com/)
 
 ## What This ETL Means
 
@@ -183,9 +186,9 @@ This combination gives both high-level and deep operational visibility.
 
 ### Dagster jobs
 
-- Generation job: `generation_simulation_job`
-- Ingestion job: `ingestion_job`
-- Analytics job: `build_analytics_models`
+- Generation job: `data_generation_simulation_job`
+- Ingestion job: `data_ingestion_job`
+- Analytics job: `data_transformations_job`
 
 ### Script runners
 
@@ -200,6 +203,20 @@ This combination gives both high-level and deep operational visibility.
 
 `scripts/reset/reset_ingestion_metadata.py` can selectively clear metadata for chosen stages (for replay scenarios).
 
+## Quick Run Commands (uv)
+
+```bash
+# From repository root
+uv sync
+
+# Start Dagster UI
+cd b2b_ec_etl
+uv run dg dev
+
+# Optional: run dbt directly
+uv run dbt build --project-dir b2b_ec_warehouse --profiles-dir .dbt
+```
+
 ## Practical Mental Model
 
 If you remember only one thing, use this:
@@ -210,4 +227,3 @@ If you remember only one thing, use this:
 4. **Track everything** with manifests, checkpoints, snapshots, and watermarks.
 
 That is the architectural backbone of this ETL.
-

@@ -1,61 +1,62 @@
-# dg_project
+# B2B E-commerce Data Platform (Dagster ETL + dbt)
+[![Orchestration-Dagster](https://img.shields.io/badge/Orchestration-Dagster-4f46e5?style=flat-square)](https://dagster.io/)
+[![Warehouse-MotherDuck%20%2F%20DuckDB](https://img.shields.io/badge/Warehouse-MotherDuck%20%2F%20DuckDB-0f766e?style=flat-square)](https://motherduck.com/)
+[![Transformations-dbt](https://img.shields.io/badge/Transformations-dbt-f97316?style=flat-square)](https://www.getdbt.com/)
 
-## Getting started
+Dagster project for orchestrating the B2B ecommerce pipeline:
+1. Ingestion flow: raw capture -> processing -> incremental load into the ingestion schema.
+2. Analytics flow: run dbt models for staging and marts.
 
-### Installing dependencies
+## Jobs
+1. `data_ingestion_job`
+   Runs:
+   - `raw_capture_postgres`
+   - `raw_capture_files`
+   - `process_postgres`
+   - `process_files`
+   - `staging_incremental_load`
+2. `data_transformations_job`
+   Runs dbt assets from `b2b_ec_warehouse`.
 
-**Option 1: uv**
-
-Ensure [`uv`](https://docs.astral.sh/uv/) is installed following their [official documentation](https://docs.astral.sh/uv/getting-started/installation/).
-
-Create a virtual environment, and install the required dependencies using _sync_:
-
-```bash
-uv sync
-```
-
-Then, activate the virtual environment:
-
-| OS | Command |
-| --- | --- |
-| MacOS | ```source .venv/bin/activate``` |
-| Windows | ```.venv\Scripts\activate``` |
-
-**Option 2: pip**
-
-Install the python dependencies with [pip](https://pypi.org/project/pip/):
+## Setup (uv)
+From repository root:
 
 ```bash
-python3 -m venv .venv
+uv sync --all-packages
 ```
 
-Then activate the virtual environment:
-
-| OS | Command |
-| --- | --- |
-| MacOS | ```source .venv/bin/activate``` |
-| Windows | ```.venv\Scripts\activate``` |
-
-Install the required dependencies:
+## Run (uv)
+Start Dagster UI:
 
 ```bash
-pip install -e ".[dev]"
+cd b2b_ec_etl
+uv run dg dev
 ```
 
-### Running Dagster
+Dagster will be available at `http://localhost:3000`.
 
-Start the Dagster UI web server:
+## Optional Direct dbt Run
+If you want to run dbt directly (outside Dagster):
 
 ```bash
-dg dev
+uv run dbt build --project-dir b2b_ec_warehouse --profiles-dir .dbt
 ```
 
-Open http://localhost:3000 in your browser to see the project.
+## MinIO Storage (Recommended Local Mode)
+ETL stages use object storage for raw, processed, and metadata artifacts.
 
-## Learn more
+```bash
+# from repository root
+docker compose up -d minio
+uv run python packages/b2b_ec_utils/src/b2b_ec_utils/storage.py
+```
 
-To learn more about this template and Dagster in general:
+Key `.env` variables:
+1. `STORAGE_LOCATION=minio`
+2. `STORAGE_MINIO_ENDPOINT_URL=http://localhost:9000`
+3. `STORAGE_MINIO_ROOT_USER=<your-user>`
+4. `STORAGE_MINIO_ROOT_PASSWORD=<your-password>`
 
-- [Dagster Documentation](https://docs.dagster.io/)
-- [Dagster University](https://courses.dagster.io/)
-- [Dagster Slack Community](https://dagster.io/slack)
+## Notes
+1. Keep `.env` configured for Postgres, storage, and MotherDuck before running jobs.
+2. Ingestion target schema is controlled by `INGESTION_LOAD_SCHEMA`.
