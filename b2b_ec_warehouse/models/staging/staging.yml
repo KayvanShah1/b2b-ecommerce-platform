@@ -1,0 +1,100 @@
+version: 2
+
+models:
+  - name: stg_ref_countries
+    description: Canonical country reference from source system.
+    columns:
+      - name: country_code
+        data_tests: [not_null, unique]
+
+  - name: stg_companies
+    description: Company master records with type and country mapping.
+    columns:
+      - name: company_cuit
+        data_tests: [not_null, unique]
+      - name: company_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Supplier", "Client"]
+
+  - name: stg_products
+    description: Product master records from ingestion layer.
+    columns:
+      - name: product_id
+        data_tests: [not_null, unique]
+
+  - name: stg_company_catalogs
+    description: Product sale prices by company catalog.
+    columns:
+      - name: company_cuit
+        data_tests: [not_null]
+      - name: product_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+
+  - name: stg_customers
+    description: Customer dimension-ready records.
+    columns:
+      - name: customer_id
+        data_tests: [not_null, unique]
+      - name: company_cuit
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_companies')
+                field: company_cuit
+
+  - name: stg_orders
+    description: Order headers with normalized amounts and order timestamp/date.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+
+  - name: stg_order_items
+    description: Order line items with line amount.
+    columns:
+      - name: order_item_id
+        data_tests: [not_null, unique]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+
+  - name: stg_marketing_leads_current
+    description: Latest marketing lead state by lead_id.
+    columns:
+      - name: lead_id
+        data_tests: [not_null, unique]
+      - name: company_name
+        data_tests: [not_null]
+
+  - name: stg_marketing_leads_history
+    description: Run-level history snapshots of marketing leads.
+    columns:
+      - name: lead_id
+        data_tests: [not_null]
+      - name: _ingestion_run_id
+        data_tests: [not_null]
+
+  - name: stg_webserver_logs
+    description: Parsed web events from ingestion layer.
+    columns:
+      - name: event_id
+        data_tests: [not_null]
+      - name: event_ts
+        data_tests: [not_null]

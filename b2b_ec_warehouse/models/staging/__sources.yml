@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: ingestion
+    schema: "{{ env_var('INGESTION_LOAD_SCHEMA', 'ingestion') }}"
+    description: ETL-loaded ingestion tables (postgres + file sources).
+    meta:
+      dagster:
+        group: raw
+    tables:
+      - name: ref_countries
+      - name: companies
+      - name: products
+      - name: company_catalogs
+      - name: customers
+      - name: orders
+      - name: order_items
+      - name: marketing_leads_current
+      - name: marketing_leads_history
+      - name: webserver_logs
