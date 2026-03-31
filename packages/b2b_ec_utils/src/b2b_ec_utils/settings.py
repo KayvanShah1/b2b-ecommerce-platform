@@ -135,6 +135,16 @@ class DBTConfig(BaseProjectSettings):
     model_config = SettingsConfigDict(env_prefix="DBT_")
 
 
+class IngestionConfig(BaseProjectSettings):
+    load_schema: str = Field(
+        default="ingestion",
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description="Warehouse schema used by ingestion load step",
+    )
+
+    model_config = SettingsConfigDict(env_prefix="INGESTION_")
+
+
 class Settings(BaseProjectSettings):
     """
     Main Settings class. It coordinates the sub-configs and manages
@@ -154,6 +164,7 @@ class Settings(BaseProjectSettings):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     motherduck: MotherDuckConfig = Field(default_factory=MotherDuckConfig)
     dbt: DBTConfig = Field(default_factory=DBTConfig)
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
 
     def model_post_init(self, __context):
         """Ensure directories exist on startup."""
