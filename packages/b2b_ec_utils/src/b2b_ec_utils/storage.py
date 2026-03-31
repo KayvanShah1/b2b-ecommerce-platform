@@ -138,6 +138,7 @@ if __name__ == "__main__":
         settings.storage.marketing_leads_bucket,
         settings.storage.raw_data_bucket,
         settings.storage.metadata_bucket,
+        settings.storage.processed_data_bucket,
     ]
     for b in buckets:
         storage.create_bucket(b)
