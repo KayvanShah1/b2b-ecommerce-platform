@@ -6,6 +6,7 @@ import polars as pl
 from b2b_ec_utils import settings
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
+from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_etl.defs.ingestion.core.models import (
     FILE_LOAD_SPECS,
@@ -168,6 +169,7 @@ def _postgres_load_spec(table_cfg: PostgresTableConfig) -> LoadDatasetSpec:
     )
 
 
+@timed_run
 def load_postgres_manifests_to_staging(
     conn,
     table_configs: tuple[PostgresTableConfig, ...],
@@ -211,6 +213,7 @@ def load_postgres_manifests_to_staging(
     return {"manifests": load_manifests, "loaded_rows": loaded_rows, "loaded_tables": loaded_tables}
 
 
+@timed_run
 def load_file_manifests_to_staging(
     conn,
     run_id: str,

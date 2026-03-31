@@ -7,6 +7,7 @@ from typing import Any, Callable
 import polars as pl
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
+from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_etl.defs.ingestion.core.models import FILE_RAW_CAPTURE_SPECS, RawFileCaptureSpec
 from b2b_ec_etl.defs.ingestion.core.state import IngestionRunContext, state_manager
@@ -305,9 +306,11 @@ def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime)
         raise
 
 
+@timed_run
 def ingest_marketing_leads_to_raw(run_id: str, run_ts: datetime) -> dict[str, Any]:
     return _ingest_file_source(FILE_RAW_CAPTURE_SPECS["marketing_leads"], run_id, run_ts)
 
 
+@timed_run
 def ingest_web_logs_to_raw(run_id: str, run_ts: datetime) -> dict[str, Any]:
     return _ingest_file_source(FILE_RAW_CAPTURE_SPECS["webserver_logs"], run_id, run_ts)

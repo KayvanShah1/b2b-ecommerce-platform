@@ -5,10 +5,12 @@ from typing import Any
 
 from b2b_ec_etl.defs.ingestion.resources import IngestionResource
 from b2b_ec_utils.logger import get_logger
+from b2b_ec_utils.timer import timed_run
 
 logger = get_logger("RawCaptureRunner")
 
 
+@timed_run
 def run_raw_capture(run_id: str | None = None) -> dict[str, Any]:
     run_ts = datetime.now(timezone.utc)
     effective_run_id = run_id or f"manual-raw-{run_ts.strftime('%Y%m%dT%H%M%S')}"
@@ -28,6 +30,7 @@ def run_raw_capture(run_id: str | None = None) -> dict[str, Any]:
     return result
 
 
+@timed_run
 def run_raw_capture_and_process(run_id: str | None = None) -> dict[str, Any]:
     run_ts = datetime.now(timezone.utc)
     effective_run_id = run_id or f"manual-ingestion-{run_ts.strftime('%Y%m%dT%H%M%S')}"
@@ -53,6 +56,7 @@ def run_raw_capture_and_process(run_id: str | None = None) -> dict[str, Any]:
     return {"run_id": effective_run_id, "raw": raw_result, "processed": process_result}
 
 
+@timed_run
 def run_process_only(run_id: str | None = None) -> dict[str, Any]:
     run_ts = datetime.now(timezone.utc)
     effective_run_id = run_id or f"manual-process-{run_ts.strftime('%Y%m%dT%H%M%S')}"

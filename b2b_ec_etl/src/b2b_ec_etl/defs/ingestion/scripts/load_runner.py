@@ -5,6 +5,7 @@ from typing import Any
 
 import duckdb
 from b2b_ec_utils.logger import get_logger
+from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_etl.defs.ingestion.resources import IngestionResource, resolve_duckdb_database_uri
 
@@ -19,6 +20,7 @@ def _safe_db_uri(uri: str) -> str:
     return uri
 
 
+@timed_run
 def run_load_only(run_id: str | None = None) -> dict[str, Any]:
     run_ts = datetime.now(timezone.utc)
     effective_run_id = run_id or f"manual-load-{run_ts.strftime('%Y%m%dT%H%M%S')}"

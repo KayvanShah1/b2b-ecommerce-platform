@@ -6,6 +6,7 @@ import polars as pl
 from b2b_ec_sources import get_connection
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
+from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_etl.defs.ingestion.core.models import PostgresTableConfig
 from b2b_ec_etl.defs.ingestion.core.state import IngestionRunContext, state_manager
@@ -126,6 +127,7 @@ def _write_cursor_chunks(
     return raw_paths, row_count, schema_columns
 
 
+@timed_run
 def extract_postgres_table_to_raw(table_cfg: PostgresTableConfig, run_id: str, run_ts: datetime) -> dict[str, Any]:
     run_ctx = state_manager.open_run(
         run_id=run_id,

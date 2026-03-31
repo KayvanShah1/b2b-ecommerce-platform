@@ -4,6 +4,7 @@ from typing import Any, Callable
 import polars as pl
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
+from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_etl.defs.ingestion.core.models import (
     FILE_PROCESS_SPECS,
@@ -290,6 +291,7 @@ def _process_dataset(
         raise
 
 
+@timed_run
 def process_postgres_dataset_to_processed(
     table_cfg: PostgresTableConfig,
     run_id: str,
@@ -311,6 +313,7 @@ def process_postgres_dataset_to_processed(
     )
 
 
+@timed_run
 def process_marketing_to_processed(
     run_id: str,
     run_ts: datetime,
@@ -324,6 +327,7 @@ def process_marketing_to_processed(
     )
 
 
+@timed_run
 def process_web_logs_to_processed(
     run_id: str,
     run_ts: datetime,
