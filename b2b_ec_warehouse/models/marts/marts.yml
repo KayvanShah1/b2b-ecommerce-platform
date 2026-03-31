@@ -1,0 +1,117 @@
+version: 2
+
+models:
+  - name: dim_datetime
+    description: Date/time dimension at day grain, generated from staged event/order/lead timestamps.
+    columns:
+      - name: date_key
+        data_tests: [not_null, unique]
+      - name: date_day
+        data_tests: [not_null, unique]
+
+  - name: dim_countries
+    description: Country dimension.
+    columns:
+      - name: country_code
+        data_tests: [not_null, unique]
+
+  - name: dim_companies
+    description: Company dimension with type and country details.
+    columns:
+      - name: company_cuit
+        data_tests: [not_null, unique]
+      - name: company_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Supplier", "Client"]
+
+  - name: dim_customers
+    description: Customer dimension enriched with company attributes.
+    columns:
+      - name: customer_id
+        data_tests: [not_null, unique]
+      - name: company_cuit
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_companies')
+                field: company_cuit
+
+  - name: dim_products
+    description: Product dimension enriched with supplier and catalog statistics.
+    columns:
+      - name: product_id
+        data_tests: [not_null, unique]
+      - name: supplier_cuit
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_companies')
+                field: company_cuit
+
+  - name: fct_company_catalog_prices
+    description: Current catalog sale price by company and product.
+    columns:
+      - name: company_cuit
+        data_tests: [not_null]
+      - name: product_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id
+
+  - name: fct_orders
+    description: Order-level fact table.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+
+  - name: fct_order_items
+    description: Order-line fact table with margin estimate.
+    columns:
+      - name: order_item_id
+        data_tests: [not_null, unique]
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_orders')
+                field: order_id
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id
+
+  - name: fct_marketing_leads_current
+    description: Current-state marketing lead fact.
+    columns:
+      - name: lead_id
+        data_tests: [not_null, unique]
+
+  - name: fct_marketing_leads_history
+    description: Historical marketing lead snapshots by ingestion run.
+    columns:
+      - name: lead_id
+        data_tests: [not_null]
+      - name: _ingestion_run_id
+        data_tests: [not_null]
+
+  - name: fct_webserver_logs
+    description: Web event fact table.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: event_ts
+        data_tests: [not_null]
