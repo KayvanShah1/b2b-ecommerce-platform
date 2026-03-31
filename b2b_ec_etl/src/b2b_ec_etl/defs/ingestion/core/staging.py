@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any
 
 import polars as pl
+from b2b_ec_utils import settings
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
 
@@ -38,11 +39,12 @@ def _upsert_dataframe(conn, dataframe: pl.DataFrame, target: LoadTargetSpec) -> 
     if dataframe.is_empty():
         return
 
-    conn.execute("CREATE SCHEMA IF NOT EXISTS staging")
+    schema_ref = _quote(settings.ingestion.load_schema)
+    conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_ref}")
     temp_table = f"tmp_{target.table}_{uuid.uuid4().hex[:8]}"
     conn.register(temp_table, dataframe.to_arrow())
 
-    target_ref = f'staging."{target.table}"'
+    target_ref = f"{schema_ref}.{_quote(target.table)}"
     temp_ref = _quote(temp_table)
 
     if target.full_snapshot:
