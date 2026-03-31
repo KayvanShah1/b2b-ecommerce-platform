@@ -10,5 +10,15 @@ renamed as (
         cast(unit_price as double) as unit_price,
         cast(coalesce(quantity, 0) * coalesce(unit_price, 0) as double) as line_amount
     from source
+),
+valid_orders as (
+    select order_id
+    from {{ ref('stg_orders') }}
+),
+validated as (
+    select renamed.*
+    from renamed
+    inner join valid_orders
+      on renamed.order_id = valid_orders.order_id
 )
-select * from renamed
+select * from validated

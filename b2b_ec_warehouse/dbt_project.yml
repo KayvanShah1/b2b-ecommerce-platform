@@ -13,11 +13,6 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
-seeds:
-  # Legacy seeds kept for compatibility while marts are being rebuilt.
-  b2b_ec_warehouse:
-    +schema: raw
-
 models:
   b2b_ec_warehouse:
     +persist_docs:
