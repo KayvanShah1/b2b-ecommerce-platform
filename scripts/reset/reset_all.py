@@ -32,7 +32,8 @@ def reset_all(motherduck_schemas_to_delete, buckets_to_empty) -> None:
 if __name__ == "__main__":
     motherduck_schemas_to_delete = [
         "staging",
-        "analytics",
+        "marts",
+        "ingestion",
     ]
     buckets_to_empty = [
         "webserver-logs",

@@ -63,8 +63,5 @@ def reset_motherduck_schemas(schema_names: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    schemas_to_delete = [
-        "ingestion",
-        # "analytics",
-    ]
+    schemas_to_delete = ["ingestion", "staging", "marts"]
     reset_motherduck_schemas(schemas_to_delete)
