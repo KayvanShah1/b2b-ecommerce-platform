@@ -42,6 +42,18 @@ If you want to run dbt directly (outside Dagster):
 uv run dbt build --project-dir b2b_ec_warehouse --profiles-dir .dbt
 ```
 
+## PostgreSQL Source Setup (Aiven Cloud)
+The ingestion raw-capture stage reads source tables from Postgres.
+
+Required `.env` keys:
+1. `POSTGRES_HOST`
+2. `POSTGRES_PORT`
+3. `POSTGRES_USER`
+4. `POSTGRES_PASSWORD`
+5. `POSTGRES_DATABASE`
+6. `POSTGRES_SSLMODE=require` (recommended for Aiven)
+7. `POSTGRES_SSLROOTCERT=<path-to-ca.pem>` (optional)
+
 ## MinIO Storage (Recommended Local Mode)
 ETL stages use object storage for raw, processed, and metadata artifacts.
 

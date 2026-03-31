@@ -83,6 +83,24 @@ Default bucket names generated from prefix:
 4. `<prefix>-processed-data`
 5. `<prefix>-metadata`
 
+## PostgreSQL Configuration (Aiven-Friendly)
+Supported `.env` keys:
+1. `POSTGRES_HOST`
+2. `POSTGRES_PORT`
+3. `POSTGRES_USER`
+4. `POSTGRES_PASSWORD`
+5. `POSTGRES_DATABASE`
+6. `POSTGRES_SSLMODE` (default `prefer`, set `require` for Aiven)
+7. `POSTGRES_SSLROOTCERT` (optional path to CA cert for strict verification)
+
+## Logs & Observability
+Check these locations when debugging runs:
+1. Application/ETL logs: `var/logs/b2b-ecommerce-platform.log.*` (Rotated)
+2. dbt logs: `b2b_ec_warehouse/logs/dbt.log`
+3. dbt query output (if enabled in your workflow): `b2b_ec_warehouse/logs/query_log.sql`
+
+Dagster also exposes per-run logs in the UI, which is the fastest way to inspect step-level failures.
+
 ## Notes
 1. Default ingestion load schema is `ingestion` (`INGESTION_LOAD_SCHEMA` can override).
 2. Bucket names are prefixed by `STORAGE_PREFIX` (default `b2b-ec`).

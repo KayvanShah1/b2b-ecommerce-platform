@@ -80,6 +80,22 @@ Build dbt directly (optional):
 uv run dbt build --project-dir b2b_ec_warehouse --profiles-dir .dbt --target dev
 ```
 
+## PostgreSQL Setup (Aiven Cloud)
+The source generators and ingestion raw-capture read from PostgreSQL. For Aiven Cloud, configure:
+1. `POSTGRES_HOST`
+2. `POSTGRES_PORT`
+3. `POSTGRES_USER`
+4. `POSTGRES_PASSWORD`
+5. `POSTGRES_DATABASE`
+6. `POSTGRES_SSLMODE=require` (recommended for Aiven)
+7. `POSTGRES_SSLROOTCERT=<path-to-ca.pem>` (optional, for `verify-ca` / `verify-full`)
+
+Quick connectivity check:
+
+```bash
+uv run python -c "from b2b_ec_sources import get_connection; c=get_connection(); print('Postgres connection OK'); c.close()"
+```
+
 ## MinIO Setup (Local Object Storage)
 This repository uses MinIO as an S3-compatible storage backend for:
 1. Source files (`marketing` CSV and `webserver` JSONL).

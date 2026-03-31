@@ -58,6 +58,17 @@ Required Postgres environment variables:
 3. `POSTGRES_USER`
 4. `POSTGRES_PASSWORD`
 5. `POSTGRES_DATABASE`
+6. `POSTGRES_SSLMODE` (optional, default `prefer`; set `require` for Aiven)
+7. `POSTGRES_SSLROOTCERT` (optional, CA path for `verify-ca` / `verify-full`)
+
+### Aiven Postgres Example
+Recommended `.env` shape for Aiven Cloud:
+1. `POSTGRES_HOST=<your-aiven-host>`
+2. `POSTGRES_PORT=<your-aiven-port>`
+3. `POSTGRES_USER=<your-aiven-user>`
+4. `POSTGRES_PASSWORD=<your-aiven-password>`
+5. `POSTGRES_DATABASE=<your-aiven-db>`
+6. `POSTGRES_SSLMODE=require`
 
 Storage configuration:
 1. `STORAGE_LOCATION` (local, minio, s3, gcs)
