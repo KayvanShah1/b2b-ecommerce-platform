@@ -101,6 +101,7 @@ class StorageConfig(BaseProjectSettings):
     # Metadata bucket is for storing things like watermarks, schema snapshots, and other auxiliary data for ingestion processes.
     # It is separate from raw data to allow for different lifecycle policies and access controls.
     metadata_bucket: str = Field(default="metadata")
+    processed_data_bucket: str = Field(default="processed-data")
     datasets: DatasetStoragePaths = Field(default_factory=DatasetStoragePaths)
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_")
@@ -110,6 +111,7 @@ class StorageConfig(BaseProjectSettings):
         self.marketing_leads_bucket = f"{self.prefix}-marketing-leads"
         self.raw_data_bucket = f"{self.prefix}-raw-data"
         self.metadata_bucket = f"{self.prefix}-metadata"
+        self.processed_data_bucket = f"{self.prefix}-processed-data"
 
 
 class MotherDuckConfig(BaseProjectSettings):
