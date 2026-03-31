@@ -1,0 +1,20 @@
+# Prettier defaults for this monorepo.
+printWidth: 100
+tabWidth: 2
+useTabs: false
+singleQuote: false
+trailingComma: none
+proseWrap: preserve
+endOfLine: lf
+
+overrides:
+  # Keep dbt YAML files consistently valid for parsing/compilation.
+  - files:
+      - "*.yml"
+      - "*.yaml"
+    options:
+      parser: yaml
+      tabWidth: 2
+      useTabs: false
+      singleQuote: false
+      proseWrap: preserve
