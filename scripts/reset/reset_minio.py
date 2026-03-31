@@ -42,8 +42,8 @@ def reset_minio_buckets(buckets) -> None:
 
 if __name__ == "__main__":
     buckets = [
-        settings.storage.webserver_logs_bucket,
-        settings.storage.marketing_leads_bucket,
+        # settings.storage.webserver_logs_bucket,
+        # settings.storage.marketing_leads_bucket,
         settings.storage.raw_data_bucket,
         settings.storage.metadata_bucket,
         settings.storage.processed_data_bucket,

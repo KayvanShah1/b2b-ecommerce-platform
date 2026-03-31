@@ -3,10 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+from b2b_ec_utils import settings
 from rich.console import Console
 from rich.table import Table
-
-from b2b_ec_utils import settings
 
 console = Console()
 
@@ -30,7 +29,9 @@ def reset_motherduck_schemas(schema_names: list[str]) -> None:
         return
 
     database = _resolve_duckdb_database_uri()
-    console.print(f"[bold]Resetting selected DuckDB/MotherDuck schemas in:[/bold] [cyan]{database}[/cyan]")
+    console.print(
+        f"[bold]Resetting selected DuckDB/MotherDuck schemas in:[/bold] [cyan]{database.split('?')[0]}[/cyan]"
+    )
 
     with duckdb.connect(database=database, read_only=False) as con:
         existing_schemas = {
@@ -64,6 +65,6 @@ def reset_motherduck_schemas(schema_names: list[str]) -> None:
 if __name__ == "__main__":
     schemas_to_delete = [
         "staging",
-        "analytics",
+        # "analytics",
     ]
     reset_motherduck_schemas(schemas_to_delete)
