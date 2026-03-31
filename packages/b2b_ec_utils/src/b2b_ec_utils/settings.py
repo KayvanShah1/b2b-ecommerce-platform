@@ -63,11 +63,16 @@ class DatasetStoragePaths(BaseProjectSettings):
 
     # Ingestion dataset roots
     ingestion_raw_root_prefix: str = "raw"
+    ingestion_processed_root_prefix: str = "processed"
     ingestion_metadata_root_prefix: str = "ingestion"
 
     raw_postgres_prefix: str = "source=postgres"
     raw_marketing_leads_prefix: str = "source=marketing-leads"
     raw_webserver_logs_prefix: str = "source=webserver-logs"
+
+    processed_postgres_prefix: str = "source=postgres"
+    processed_marketing_leads_prefix: str = "source=marketing-leads"
+    processed_webserver_logs_prefix: str = "source=webserver-logs"
 
     metadata_watermarks_prefix: str = "watermarks"
     metadata_runs_prefix: str = "runs"
@@ -117,7 +122,7 @@ class StorageConfig(BaseProjectSettings):
 class MotherDuckConfig(BaseProjectSettings):
     local_database: str = Field(default="b2b_ec_warehouse.duckdb")
     database: str = Field(default="b2b_ecommerce")
-    token: Optional[SecretStr] = Field(default="<API_TOKEN>", description="MotherDuck API token")
+    token: SecretStr = Field(default="<API_TOKEN>", description="MotherDuck API token")
 
     model_config = SettingsConfigDict(env_prefix="MOTHERDUCK_")
 

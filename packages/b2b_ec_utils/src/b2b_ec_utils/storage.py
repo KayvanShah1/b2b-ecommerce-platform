@@ -73,6 +73,23 @@ class Storage:
 
         return self.get_path(cfg.raw_data_bucket, cfg.datasets.ingestion_raw_root_prefix, dataset_map[dataset], *parts)
 
+    def get_processed_dataset_path(self, dataset: str, *parts: str) -> str:
+        cfg = self.cfg.storage
+        dataset_map = {
+            "postgres": cfg.datasets.processed_postgres_prefix,
+            "marketing_leads": cfg.datasets.processed_marketing_leads_prefix,
+            "webserver_logs": cfg.datasets.processed_webserver_logs_prefix,
+        }
+        if dataset not in dataset_map:
+            raise ValueError(f"Unknown processed dataset '{dataset}'")
+
+        return self.get_path(
+            cfg.processed_data_bucket,
+            cfg.datasets.ingestion_processed_root_prefix,
+            dataset_map[dataset],
+            *parts,
+        )
+
     def get_metadata_path(self, category: str, *parts: str) -> str:
         cfg = self.cfg.storage
         category_map = {
