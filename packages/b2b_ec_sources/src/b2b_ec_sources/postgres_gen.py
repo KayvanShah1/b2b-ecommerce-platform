@@ -456,7 +456,9 @@ class CommerceSourceDataGenerator:
                     "order_date": o_date,
                     "total_amount": round(total, 2),
                     "created_at": o_date,
-                    "updated_at": o_date,
+                    # Keep seed rows historical, but stamp incremental inserts as "now"
+                    # so incremental_timestamp extraction does not miss backdated orders.
+                    "updated_at": o_date if is_seed else now_ts,
                 }
             )
             items_by_order.append(current_items)
