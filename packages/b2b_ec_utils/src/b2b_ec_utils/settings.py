@@ -43,6 +43,14 @@ class PostgresConfig(BaseProjectSettings):
     user: SecretStr = Field(default="postgres", description="PostgreSQL user")
     password: SecretStr = Field(default="postgres", description="PostgreSQL password")
     database: str = Field(default="b2b_source_db", description="PostgreSQL database")
+    sslmode: str = Field(
+        default="prefer",
+        description="PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)",
+    )
+    sslrootcert: Optional[Path] = Field(
+        default=None,
+        description="Optional path to CA certificate bundle for verify-ca/verify-full",
+    )
 
     # Inherit the env_file from BaseProjectSettings but add a prefix
     model_config = SettingsConfigDict(env_prefix="POSTGRES_")
