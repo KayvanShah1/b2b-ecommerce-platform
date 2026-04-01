@@ -13,6 +13,7 @@ def reset_postgres_database() -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
+                DROP TABLE IF EXISTS lead_conversions CASCADE;
                 DROP TABLE IF EXISTS order_items CASCADE;
                 DROP TABLE IF EXISTS orders CASCADE;
                 DROP TABLE IF EXISTS products CASCADE;

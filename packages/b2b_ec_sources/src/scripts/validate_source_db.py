@@ -8,6 +8,10 @@ import polars as pl
 from b2b_ec_sources import get_connection
 from b2b_ec_sources.geography import GEO
 from b2b_ec_utils.storage import storage
+from rich.console import Console
+from rich.table import Table
+
+console = Console()
 
 
 def _latest_path(pattern: str) -> str | None:
@@ -19,21 +23,18 @@ def _latest_path(pattern: str) -> str | None:
 
 def _print_top_country_share(label: str, country_codes: list[str]) -> None:
     if not country_codes:
-        print(f"{label}: no rows")
+        console.print(f"[yellow]{label}: no rows[/yellow]")
         return
 
     top_set = {c.upper() for c in GEO.top_country_codes}
     total = len(country_codes)
     top_count = sum(1 for c in country_codes if (c or "").upper() in top_set)
     share = top_count / total
-    print(f"{label}: top-10 share = {share:.2%} ({top_count}/{total}) [target={GEO.top_country_share:.0%}]")
-
-
-def _print_check(name: str, issue_count: int) -> bool:
-    ok = issue_count == 0
-    status = "PASS" if ok else "FAIL"
-    print(f"{status}: {name} -> issues={issue_count}")
-    return ok
+    tone = "green" if share >= GEO.top_country_share * 0.9 else "yellow"
+    console.print(
+        f"{label}: top-10 share = [{tone}]{share:.2%}[/{tone}] "
+        f"({top_count}/{total}) [target={GEO.top_country_share:.0%}]"
+    )
 
 
 @contextmanager
@@ -57,7 +58,7 @@ def validate_source_db() -> None:
         "order_items",
     ]
 
-    print("=== Source DB Validation ===")
+    console.rule("[bold]Source DB Validation[/bold]")
     with _db_cursor() as cur:
         missing_tables: list[str] = []
         for table in required_tables:
@@ -66,7 +67,7 @@ def validate_source_db() -> None:
                 missing_tables.append(table)
 
         if missing_tables:
-            print(f"FAIL: Missing required tables: {', '.join(missing_tables)}")
+            console.print(f"[red]FAIL:[/red] Missing required tables: {', '.join(missing_tables)}")
             return
 
         counts = {}
@@ -74,7 +75,27 @@ def validate_source_db() -> None:
             cur.execute(f"SELECT COUNT(*) FROM {table}")
             counts[table] = cur.fetchone()[0]
 
-        print("Row counts: " + ", ".join(f"{table}={counts[table]}" for table in required_tables))
+        cur.execute("SELECT to_regclass('public.lead_conversions')")
+        has_lead_conversions = cur.fetchone()[0] is not None
+        if has_lead_conversions:
+            cur.execute("SELECT COUNT(*) FROM lead_conversions")
+            counts["lead_conversions"] = cur.fetchone()[0]
+
+        row_count_table = Table(title="Row Counts", show_header=True, header_style="bold cyan")
+        row_count_table.add_column("Table")
+        row_count_table.add_column("Rows", justify="right")
+        for table_name in required_tables:
+            row_count_table.add_row(table_name, f"{counts[table_name]}")
+        if has_lead_conversions:
+            row_count_table.add_row("lead_conversions (optional)", f"{counts['lead_conversions']}")
+        else:
+            row_count_table.add_row("lead_conversions (optional)", "missing")
+        console.print(row_count_table)
+
+        if has_lead_conversions:
+            console.print("[dim]Optional conversion table detected; running conversion checks.[/dim]")
+        else:
+            console.print("[dim]Optional table missing: lead_conversions (conversion checks skipped).[/dim]")
 
         checks = [
             (
@@ -287,17 +308,69 @@ def validate_source_db() -> None:
             ),
         ]
 
-        passed = 0
-        failed = 0
+        if has_lead_conversions:
+            checks.extend(
+                [
+                    (
+                        "lead_conversions.company_cuit references companies",
+                        """
+                            SELECT COUNT(*)
+                            FROM lead_conversions lc
+                            LEFT JOIN companies c ON lc.company_cuit = c.cuit
+                            WHERE c.cuit IS NULL
+                            """,
+                    ),
+                    (
+                        "lead_conversions company is Client",
+                        """
+                            SELECT COUNT(*)
+                            FROM lead_conversions lc
+                            JOIN companies c ON lc.company_cuit = c.cuit
+                            WHERE c.type <> 'Client'
+                            """,
+                    ),
+                    (
+                        "lead_conversions.country_code exists in ref_countries when present",
+                        """
+                            SELECT COUNT(*)
+                            FROM lead_conversions lc
+                            LEFT JOIN ref_countries rc ON lc.country_code = rc.code
+                            WHERE lc.country_code IS NOT NULL
+                              AND rc.code IS NULL
+                            """,
+                    ),
+                    (
+                        "lead_conversions.converted_at is not null",
+                        """
+                            SELECT COUNT(*)
+                            FROM lead_conversions
+                            WHERE converted_at IS NULL
+                            """,
+                    ),
+                ]
+            )
+
+        results: list[tuple[str, int, bool]] = []
         for check_name, sql in checks:
             cur.execute(sql)
             issue_count = cur.fetchone()[0]
-            if _print_check(check_name, issue_count):
-                passed += 1
-            else:
-                failed += 1
+            ok = issue_count == 0
+            results.append((check_name, issue_count, ok))
 
-        print(f"Source DB checks summary: PASS={passed} FAIL={failed}")
+        checks_table = Table(title="Source DB Checks", show_header=True, header_style="bold cyan")
+        checks_table.add_column("Status", width=8)
+        checks_table.add_column("Check")
+        checks_table.add_column("Issues", justify="right")
+        for check_name, issue_count, ok in results:
+            status = "[green]PASS[/green]" if ok else "[red]FAIL[/red]"
+            checks_table.add_row(status, check_name, str(issue_count))
+        console.print(checks_table)
+
+        passed = sum(1 for _, _, ok in results if ok)
+        failed = len(results) - passed
+
+        summary_style = "green" if failed == 0 else "red"
+        console.print(f"Source DB checks summary: [green]PASS={passed}[/green] [{summary_style}]FAIL={failed}[/{summary_style}]")
 
 
 def validate_company_distribution() -> None:
@@ -311,7 +384,7 @@ def validate_company_distribution() -> None:
 def validate_marketing_leads() -> None:
     latest = _latest_path(storage.get_marketing_leads_path("b2b_leads_*.csv"))
     if not latest:
-        print("Marketing leads: no files found")
+        console.print("[yellow]Marketing leads: no files found[/yellow]")
         return
 
     with storage.open(latest, mode="rb") as f:
@@ -325,7 +398,7 @@ def validate_marketing_leads() -> None:
         company_rows = [{"company_name": row[0], "company_country_code": row[1]} for row in cur.fetchall()]
 
     if not company_rows:
-        print("Marketing leads alignment: no client companies found")
+        console.print("[yellow]Marketing leads alignment: no client companies found[/yellow]")
         return
 
     company_df = pl.DataFrame(company_rows)
@@ -333,12 +406,16 @@ def validate_marketing_leads() -> None:
     joined = existing_df.join(company_df, on="company_name", how="left")
     comparable = joined.filter(pl.col("company_country_code").is_not_null())
     if comparable.is_empty():
-        print("Marketing leads alignment: no comparable existing-company rows")
+        console.print("[yellow]Marketing leads alignment: no comparable existing-company rows[/yellow]")
         return
 
     aligned = comparable.filter(pl.col("country_code") == pl.col("company_country_code")).height
     alignment_ratio = aligned / comparable.height
-    print(f"Marketing leads alignment (existing-company leads): {alignment_ratio:.2%} ({aligned}/{comparable.height})")
+    tone = "green" if alignment_ratio >= 0.9 else "yellow"
+    console.print(
+        f"Marketing leads alignment (existing-company leads): "
+        f"[{tone}]{alignment_ratio:.2%}[/{tone}] ({aligned}/{comparable.height})"
+    )
 
 
 def validate_web_logs(max_rows: int = 20000) -> None:
@@ -346,7 +423,7 @@ def validate_web_logs(max_rows: int = 20000) -> None:
     latest_seed = _latest_path(storage.get_webserver_logs_path(True, "*.jsonl"))
     latest = latest_daily or latest_seed
     if not latest:
-        print("Web logs: no files found")
+        console.print("[yellow]Web logs: no files found[/yellow]")
         return
 
     records = []
@@ -366,7 +443,7 @@ def validate_web_logs(max_rows: int = 20000) -> None:
             )
 
     if not records:
-        print("Web logs: no parsable rows")
+        console.print("[yellow]Web logs: no parsable rows[/yellow]")
         return
 
     logs_df = pl.DataFrame(records)
@@ -378,12 +455,12 @@ def validate_web_logs(max_rows: int = 20000) -> None:
     unauth_rows = total_rows - auth_rows
     auth_ratio = auth_rows / total_rows if total_rows else 0.0
     unauth_ratio = unauth_rows / total_rows if total_rows else 0.0
-    print(
-        f"Web logs auth mix: authenticated={auth_rows}/{total_rows} ({auth_ratio:.2%}), "
-        f"unauthenticated={unauth_rows}/{total_rows} ({unauth_ratio:.2%})"
+    console.print(
+        f"Web logs auth mix: authenticated=[cyan]{auth_rows}/{total_rows} ({auth_ratio:.2%})[/cyan], "
+        f"unauthenticated=[cyan]{unauth_rows}/{total_rows} ({unauth_ratio:.2%})[/cyan]"
     )
     if auth_df.is_empty():
-        print("Web logs alignment: no authenticated rows")
+        console.print("[yellow]Web logs alignment: no authenticated rows[/yellow]")
         return
 
     with _db_cursor() as cur:
@@ -401,17 +478,21 @@ def validate_web_logs(max_rows: int = 20000) -> None:
     joined = auth_df.join(user_df, on="username", how="left")
     comparable = joined.filter(pl.col("user_country_code").is_not_null())
     if comparable.is_empty():
-        print("Web logs alignment: no comparable authenticated rows")
+        console.print("[yellow]Web logs alignment: no comparable authenticated rows[/yellow]")
         return
 
     aligned = comparable.filter(pl.col("country_code") == pl.col("user_country_code")).height
     alignment_ratio = aligned / comparable.height
-    print(f"Web logs alignment (authenticated rows only): {alignment_ratio:.2%} ({aligned}/{comparable.height})")
+    tone = "green" if alignment_ratio >= 0.9 else "yellow"
+    console.print(
+        f"Web logs alignment (authenticated rows only): "
+        f"[{tone}]{alignment_ratio:.2%}[/{tone}] ({aligned}/{comparable.height})"
+    )
 
 
 def main(max_web_log_rows: int = 20000) -> None:
     validate_source_db()
-    print("=== Geography Validation ===")
+    console.rule("[bold]Geography Validation[/bold]")
     validate_company_distribution()
     validate_marketing_leads()
     validate_web_logs(max_rows=max_web_log_rows)

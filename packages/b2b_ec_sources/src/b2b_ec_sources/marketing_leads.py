@@ -87,6 +87,16 @@ class MarketingLeadsGenerator:
         self.sources = params.sources
         self.statuses = params.statuses
 
+    @staticmethod
+    def _as_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "t", "yes", "y"}
+        return False
+
     def get_existing_companies(self):
         """Fetch existing client companies and countries for aligned lead geography."""
         conn = get_connection()
@@ -192,6 +202,9 @@ class MarketingLeadsGenerator:
 
         # Step 2: estimate target row count from source-company context and prior run volume.
         existing_companies = self.get_existing_companies()
+        existing_client_names = {
+            str(company.get("name") or "").strip().lower() for company in existing_companies if company.get("name")
+        }
         prev_count = 0 if prev_df is None else prev_df.height
         target_count = count or self._suggest_count(len(existing_companies), is_seed, prev_count, now_ts)
 
@@ -209,6 +222,14 @@ class MarketingLeadsGenerator:
                 new_status = self._advance_status(current_status)
                 status_changed = new_status != current_status
 
+                company_name = str(row.get("company_name") or localized_company_name(row.get("country_code"))).strip()
+                converted_company = bool(company_name and company_name.lower() in existing_client_names)
+                row_is_prospect = self._as_bool(row.get("is_prospect", False))
+                is_prospect = False if converted_company else row_is_prospect
+                if converted_company and new_status not in {"Qualified", "Lost"}:
+                    new_status = "Qualified"
+                    status_changed = new_status != current_status
+
                 created_at = row.get("created_at") or self._random_created_at(
                     is_seed=True, now_ts=now_ts, month_probs=month_probs
                 ).strftime("%Y-%m-%d %H:%M:%S")
@@ -221,10 +242,8 @@ class MarketingLeadsGenerator:
                     {
                         "lead_id": row.get("lead_id", fake.uuid4()),
                         "created_at": created_at,
-                        "company_name": row.get(
-                            "company_name", localized_company_name(row.get("country_code"))
-                        ),
-                        "is_prospect": row.get("is_prospect", False),
+                        "company_name": company_name,
+                        "is_prospect": is_prospect,
                         "industry": row.get("industry", fake.bs().capitalize()),
                         "contact_name": row.get("contact_name", localized_full_name(row.get("country_code"))),
                         "contact_email": row.get("contact_email", fake.unique.company_email()),

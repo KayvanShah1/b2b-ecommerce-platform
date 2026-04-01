@@ -99,7 +99,7 @@ MinIO endpoints:
 
 ## Generator: Relational Source DB (`postgres_gen.py`)
 
-Purpose: Seed and evolve the core relational dataset in Postgres. This is the primary source of truth for companies, products, catalogs, customers, and orders.
+Purpose: Seed and evolve the core relational dataset in Postgres. This is the primary source of truth for companies, products, catalogs, customers, orders, and lead-to-client conversion events.
 
 ### Schema Created
 
@@ -111,6 +111,7 @@ Tables:
 5. `customers`
 6. `orders` (with status and audit timestamps)
 7. `order_items`
+8. `lead_conversions` (one row per converted lead, idempotent by `lead_id`)
 
 ```mermaid
 erDiagram
@@ -122,6 +123,7 @@ erDiagram
   customers ||--o{ orders : customer_id
   companies ||--o{ orders : company_cuit
   orders ||--o{ order_items : order_id
+  companies ||--o{ lead_conversions : company_cuit
 ```
 
 ### Seed Phase (First Run)
@@ -157,10 +159,30 @@ flowchart TD
 If the schema exists, each run simulates a "market day":
 1. New companies can appear (client or supplier).
 2. Supplier price shifts cascade into client catalog prices.
-3. Organic growth adds new customers and new products.
-4. Some completed orders from 3-7 days ago are marked as returned.
-5. New orders and order items are generated from current state.
-6. Daily order volume is seasonally sampled (default range target: 100-450).
+3. Marketing leads from the latest CSV snapshot are evaluated for conversion into real client entities.
+4. Organic growth adds new customers and new products.
+5. Some completed orders from 3-7 days ago are marked as returned.
+6. New orders and order items are generated from current state.
+7. Daily order volume is seasonally sampled (default range target: 100-450).
+
+### Lead Conversion Workflow (Source Side)
+
+Lead conversion is implemented in source evolution, not in warehouse models:
+1. The latest leads file (`b2b_leads_*.csv`) is loaded from storage.
+2. Candidate leads are filtered to active prospects within a configurable conversion window (default: 7 days).
+3. A conversion probability is computed using lead status, source, revenue, age, and bounded random noise.
+4. Converted leads are written to `lead_conversions` (PK `lead_id`) for idempotency and auditability.
+5. If a converted lead company does not exist as a client, a new `companies` row is created.
+6. A bootstrap customer can be created from lead contact details (controlled by `lead_conversion_bootstrap_customer_ratio`).
+7. New client catalogs are seeded so converted clients can participate in downstream order generation.
+
+Conversion tuning parameters are defined in `CSDGParameters` inside `postgres_gen.py`:
+1. `enable_lead_conversion`
+2. `lead_conversion_window_days`
+3. `lead_conversion_base_*`
+4. `lead_conversion_noise_sigma`
+5. `lead_conversion_min_prob` / `lead_conversion_max_prob`
+6. `lead_conversion_bootstrap_customer_ratio`
 
 ### Geography and Trade Realism
 
@@ -177,10 +199,11 @@ This keeps country concentration realistic while preserving import/export style 
 ```mermaid
 flowchart TD
   E0[Start Evolution Run] --> E1[New companies + price shifts]
-  E1 --> E2[Organic growth: customers + products]
-  E2 --> E3[Retroactive returns: 3-7 days]
-  E3 --> E4[State recovery: catalogs + customers]
-  E4 --> E5[Generate orders + order_items]
+  E1 --> E2[Lead conversion from latest leads snapshot]
+  E2 --> E3[Organic growth: customers + products]
+  E3 --> E4[Retroactive returns: 3-7 days]
+  E4 --> E5[State recovery: catalogs + customers]
+  E5 --> E6[Generate orders + order_items]
 ```
 
 ### Operational Notes
@@ -188,6 +211,13 @@ flowchart TD
 1. Bulk loads use `COPY FROM` for speed.
 2. Audit fields (`created_at`, `updated_at`) are initialized and updated on price shifts and returns.
 3. Orders are always generated after customer creation to prevent time-travel.
+
+### Current Model Constraints
+
+1. Customer location is implicit via `customers.company_cuit -> companies.country_code`; `customers` has no direct location column.
+2. A customer buys only within their own client account (`orders.company_cuit` is always the customer's company).
+3. Cross-company commerce is modeled through each client catalog (supplier mix), not by moving customers across client accounts.
+4. With default run order (`Postgres -> Web logs -> Marketing leads`), newly generated leads are converted in the next cycle, not the same cycle.
 
 ## Generator: Marketing Leads (`marketing_leads.py`)
 
@@ -201,6 +231,7 @@ Key behavior:
 5. Contact names and phone numbers are localized from country-to-locale mapping.
 6. Country codes align with Postgres `ref_countries` for clean joins.
 7. Lead timestamps and daily lead volume follow monthly seasonality plus jitter.
+8. Carryover rows automatically stop being prospects if the company has converted to an existing client.
 
 ```mermaid
 flowchart LR
@@ -275,6 +306,10 @@ Source DB validation:
 uv run python packages/b2b_ec_sources/src/scripts/validate_source_db.py
 ```
 
+Validation coverage includes:
+1. Core referential integrity and business-rule checks.
+2. Optional `lead_conversions` integrity checks when that table exists.
+
 Validation with limited web-log scan:
 ```bash
 uv run python packages/b2b_ec_sources/src/scripts/validate_source_db.py --max-web-log-rows 10000
@@ -297,6 +332,11 @@ Recommended order:
 2. Webserver logs (reuses customers).
 3. Marketing leads (reuses companies when available and can carry over prior day status).
 
+Lead conversion timing with this order:
+1. Conversions are evaluated during the Postgres evolution step.
+2. Because leads are generated after Postgres in the same cycle, newly generated leads are eligible in the next cycle.
+3. If same-cycle conversion is required, run leads before the Postgres step in your custom orchestration.
+
 ## How To Use This Package (Business and Data)
 
 Business use cases:
@@ -312,7 +352,8 @@ Data and engineering use cases:
 Practical workflow:
 1. Run the Postgres generator to seed or evolve the baseline.
 2. Generate leads and logs to create multi-source inputs.
-3. Use these sources to develop dashboards, models, and pipelines without production risk.
+3. Run additional cycles to realize lead conversions in source entities.
+4. Use these sources to develop dashboards, models, and pipelines without production risk.
 
 ## Evolution Logic: Intuition and Real-World Parallels
 
@@ -330,6 +371,7 @@ The evolution cycle is designed to mirror how B2B systems behave in production:
    Web traffic includes bots, failed requests, and non-authenticated sessions, which reflect what real systems see daily.
 
 This is why the engine mixes deterministic rules (referential integrity, time ordering) with probabilistic events (new companies, price shifts, returns). It creates data that behaves like a live system, not just a static fixture.
+It also adds a probabilistic lead-to-client conversion path, so marketing and commercial domains evolve together instead of remaining disconnected.
 
 ## Troubleshooting
 
