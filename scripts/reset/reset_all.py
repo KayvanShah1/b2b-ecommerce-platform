@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import sys
+
+from b2b_ec_utils import get_logger, settings, timed_run
 from rich.console import Console
 from rich.panel import Panel
 
-from scripts.reset.reset_minio import reset_minio_buckets
-from scripts.reset.reset_motherduck import reset_motherduck_schemas
-from scripts.reset.reset_postgres import reset_postgres_database
+sys.path.append(str(settings.project_root / "scripts"))
+
+from reset.reset_minio import reset_minio_buckets
+from reset.reset_motherduck import reset_motherduck_schemas
+from reset.reset_postgres import reset_postgres_database
 
 console = Console()
+logger = get_logger("ResetAll")
 
 
+@timed_run
 def reset_all(motherduck_schemas_to_delete, buckets_to_empty) -> None:
+    logger.info("Starting full reset process...")
     console.print(
         Panel.fit(
             "[bold red]This will reset Postgres objects, DuckDB/MotherDuck objects, and empty data buckets.[/bold red]\n"
@@ -24,9 +32,10 @@ def reset_all(motherduck_schemas_to_delete, buckets_to_empty) -> None:
         return
 
     reset_postgres_database()
-    reset_motherduck_schemas(motherduck_schemas_to_delete)
     reset_minio_buckets(buckets=buckets_to_empty)
+    reset_motherduck_schemas(motherduck_schemas_to_delete)
     console.print("[bold green]All reset steps completed.[/bold green]")
+    logger.info("Full reset process completed.")
 
 
 if __name__ == "__main__":
@@ -36,10 +45,10 @@ if __name__ == "__main__":
         "ingestion",
     ]
     buckets_to_empty = [
-        "webserver-logs",
-        "marketing-leads",
-        "raw-data",
-        "metadata",
-        "processed-data",
+        settings.storage.webserver_logs_bucket,
+        settings.storage.marketing_leads_bucket,
+        settings.storage.raw_data_bucket,
+        settings.storage.metadata_bucket,
+        settings.storage.processed_data_bucket,
     ]
     reset_all(motherduck_schemas_to_delete, buckets_to_empty)
