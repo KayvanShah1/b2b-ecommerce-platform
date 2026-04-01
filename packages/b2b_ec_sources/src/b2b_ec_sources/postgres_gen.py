@@ -12,7 +12,7 @@ from b2b_ec_utils.timer import timed_run
 from faker import Faker
 from pydantic import BaseModel
 
-from b2b_ec_sources import get_connection, get_iso_data
+from b2b_ec_sources import coerce_bool, get_connection, get_iso_data
 from b2b_ec_sources.geography import (
     build_country_distribution,
     classify_trade_lane,
@@ -106,6 +106,25 @@ class CSDGParameters(BaseModel):
 DEFAULT_CSDG_PARAMS = CSDGParameters()
 DEFAULT_FAKE = Faker()
 DEFAULT_LOGGER = get_logger("SourceDBGeneration")
+LEAD_CONVERSIONS_SCHEMA_SQL = """
+    CREATE TABLE IF NOT EXISTS lead_conversions (
+        lead_id TEXT PRIMARY KEY,
+        company_cuit TEXT NOT NULL REFERENCES companies(cuit),
+        company_name TEXT NOT NULL,
+        country_code TEXT REFERENCES ref_countries(code),
+        lead_status TEXT,
+        lead_source TEXT,
+        conversion_probability DOUBLE PRECISION,
+        converted_at TIMESTAMP NOT NULL,
+        source_file TEXT,
+        conversion_window_days INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT (now() at time zone 'utc')
+    );
+    CREATE INDEX IF NOT EXISTS idx_lead_conversions_company_cuit
+        ON lead_conversions(company_cuit);
+    CREATE INDEX IF NOT EXISTS idx_lead_conversions_converted_at
+        ON lead_conversions(converted_at);
+"""
 
 
 class CommerceSourceDataGenerator:
@@ -191,25 +210,9 @@ class CommerceSourceDataGenerator:
                 quantity INTEGER,
                 unit_price DECIMAL(12,2)
             );
-            CREATE TABLE IF NOT EXISTS lead_conversions (
-                lead_id TEXT PRIMARY KEY,
-                company_cuit TEXT NOT NULL REFERENCES companies(cuit),
-                company_name TEXT NOT NULL,
-                country_code TEXT REFERENCES ref_countries(code),
-                lead_status TEXT,
-                lead_source TEXT,
-                conversion_probability DOUBLE PRECISION,
-                converted_at TIMESTAMP NOT NULL,
-                source_file TEXT,
-                conversion_window_days INTEGER NOT NULL,
-                created_at TIMESTAMP DEFAULT (now() at time zone 'utc')
-            );
-            CREATE INDEX IF NOT EXISTS idx_lead_conversions_company_cuit
-                ON lead_conversions(company_cuit);
-            CREATE INDEX IF NOT EXISTS idx_lead_conversions_converted_at
-                ON lead_conversions(converted_at);
             """
         )
+        self._ensure_lead_conversion_schema(cur)
 
     def _generate_customer_data(self, company_cuit, company_country_code=None, backdate_from="-1y"):
         """Generate one customer row aligned to a company and country locale."""
@@ -380,28 +383,8 @@ class CommerceSourceDataGenerator:
         return selected_rows
 
     def _ensure_lead_conversion_schema(self, cur):
-        """Create conversion audit table if schema already existed before this feature was added."""
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS lead_conversions (
-                lead_id TEXT PRIMARY KEY,
-                company_cuit TEXT NOT NULL REFERENCES companies(cuit),
-                company_name TEXT NOT NULL,
-                country_code TEXT REFERENCES ref_countries(code),
-                lead_status TEXT,
-                lead_source TEXT,
-                conversion_probability DOUBLE PRECISION,
-                converted_at TIMESTAMP NOT NULL,
-                source_file TEXT,
-                conversion_window_days INTEGER NOT NULL,
-                created_at TIMESTAMP DEFAULT (now() at time zone 'utc')
-            );
-            CREATE INDEX IF NOT EXISTS idx_lead_conversions_company_cuit
-                ON lead_conversions(company_cuit);
-            CREATE INDEX IF NOT EXISTS idx_lead_conversions_converted_at
-                ON lead_conversions(converted_at);
-            """
-        )
+        """Ensure conversion audit schema exists (used for both seed creation and evolution backfill)."""
+        cur.execute(LEAD_CONVERSIONS_SCHEMA_SQL)
 
     def _latest_marketing_leads_path(self) -> str | None:
         pattern = storage.get_marketing_leads_path("b2b_leads_*.csv")
@@ -419,16 +402,6 @@ class CommerceSourceDataGenerator:
         except Exception as exc:
             self.logger.warning(f"LEAD CONVERSION SKIP: could not read {latest_path}: {exc}")
             return None, latest_path
-
-    @staticmethod
-    def _as_bool(value) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "t", "yes", "y"}
-        return False
 
     @staticmethod
     def _parse_datetime(value) -> datetime | None:
@@ -564,7 +537,7 @@ class CommerceSourceDataGenerator:
                 continue
             if status.lower() == "lost":
                 continue
-            if not self._as_bool(row.get("is_prospect")):
+            if not coerce_bool(row.get("is_prospect")):
                 continue
 
             activity_ts = self._parse_datetime(row.get("status_updated_at")) or self._parse_datetime(row.get("created_at"))

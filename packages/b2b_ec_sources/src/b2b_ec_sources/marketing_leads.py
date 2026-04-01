@@ -10,7 +10,7 @@ from faker import Faker
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from b2b_ec_sources import get_connection
+from b2b_ec_sources import coerce_bool, get_connection
 from b2b_ec_sources.geography import (
     build_country_distribution,
     localized_company_name,
@@ -86,16 +86,6 @@ class MarketingLeadsGenerator:
         self.params = params
         self.sources = params.sources
         self.statuses = params.statuses
-
-    @staticmethod
-    def _as_bool(value) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "t", "yes", "y"}
-        return False
 
     def get_existing_companies(self):
         """Fetch existing client companies and countries for aligned lead geography."""
@@ -224,7 +214,7 @@ class MarketingLeadsGenerator:
 
                 company_name = str(row.get("company_name") or localized_company_name(row.get("country_code"))).strip()
                 converted_company = bool(company_name and company_name.lower() in existing_client_names)
-                row_is_prospect = self._as_bool(row.get("is_prospect", False))
+                row_is_prospect = coerce_bool(row.get("is_prospect", False))
                 is_prospect = False if converted_company else row_is_prospect
                 if converted_company and new_status not in {"Qualified", "Lost"}:
                     new_status = "Qualified"
