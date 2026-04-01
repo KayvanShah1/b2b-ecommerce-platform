@@ -7,12 +7,13 @@ from contextlib import contextmanager
 import polars as pl
 from b2b_ec_sources import get_connection
 from b2b_ec_sources.geography import GEO
+from b2b_ec_sources.lead_gen import MLG
 from b2b_ec_utils.storage import storage
 from rich.console import Console
 from rich.table import Table
 
 console = Console()
-ALLOWED_LEAD_STATUSES = {"New", "Contacted", "Qualified", "Lost", "Nurturing", "Converted"}
+ALLOWED_LEAD_STATUSES = set(MLG.statuses)
 
 
 def _latest_path(pattern: str) -> str | None:
