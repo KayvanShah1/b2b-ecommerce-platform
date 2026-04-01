@@ -226,12 +226,13 @@ Purpose: Generate B2B marketing leads as CSV files in the configured storage sys
 Key behavior:
 1. By default, about 70 percent of new leads map to existing client companies (when available).
 2. Seed mode creates a historical baseline; daily mode carries over a subset of prior leads and advances statuses.
-3. Lead sources and statuses simulate a realistic B2B funnel.
+3. Lead sources and statuses simulate a realistic B2B funnel (`New`, `Contacted`, `Nurturing`, `Qualified`, `Lost`, `Converted`).
 4. Existing-company leads inherit the company country; new prospects use weighted geography sampling.
 5. Contact names and phone numbers are localized from country-to-locale mapping.
 6. Country codes align with Postgres `ref_countries` for clean joins.
 7. Lead timestamps and daily lead volume follow monthly seasonality plus jitter.
 8. Carryover rows automatically stop being prospects if the company has converted to an existing client.
+9. Converted carryover rows are reconciled to canonical client metadata (canonical company name and country code).
 
 ```mermaid
 flowchart LR

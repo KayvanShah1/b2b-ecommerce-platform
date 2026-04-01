@@ -37,7 +37,7 @@ class MarketingLeadsParameters(BaseSettings):
         "Cold Call",
         "Referral",
     ]
-    statuses: list[str] = ["New", "Contacted", "Qualified", "Lost", "Nurturing"]
+    statuses: list[str] = ["New", "Contacted", "Qualified", "Lost", "Nurturing", "Converted"]
 
     existing_company_ratio: float = Field(default=0.70, ge=0.0, le=1.0)
     seed_leads_per_company: int = Field(default=25, ge=1)
@@ -92,7 +92,7 @@ class MarketingLeadsGenerator:
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT name, country_code FROM companies WHERE type = 'Client' LIMIT 500")
+                cur.execute("SELECT name, country_code FROM companies WHERE type = 'Client'")
                 return [{"name": r[0], "country_code": r[1]} for r in cur.fetchall()]
         except Exception as e:
             logger.warning(f"Could not fetch companies from DB: {e}. Using random names.")
@@ -118,8 +118,8 @@ class MarketingLeadsGenerator:
             return None
 
     def _advance_status(self, current_status: str) -> str:
-        if current_status == "Lost":
-            return "Lost"
+        if current_status in {"Lost", "Converted"}:
+            return current_status
         roll = random.random()
         if roll < 0.15:
             return "Lost"
@@ -192,8 +192,13 @@ class MarketingLeadsGenerator:
 
         # Step 2: estimate target row count from source-company context and prior run volume.
         existing_companies = self.get_existing_companies()
-        existing_client_names = {
-            str(company.get("name") or "").strip().lower() for company in existing_companies if company.get("name")
+        existing_client_by_name = {
+            str(company.get("name") or "").strip().lower(): {
+                "name": str(company.get("name") or "").strip(),
+                "country_code": str(company.get("country_code") or "").strip().upper() or None,
+            }
+            for company in existing_companies
+            if company.get("name")
         }
         prev_count = 0 if prev_df is None else prev_df.height
         target_count = count or self._suggest_count(len(existing_companies), is_seed, prev_count, now_ts)
@@ -213,12 +218,23 @@ class MarketingLeadsGenerator:
                 status_changed = new_status != current_status
 
                 company_name = str(row.get("company_name") or localized_company_name(row.get("country_code"))).strip()
-                converted_company = bool(company_name and company_name.lower() in existing_client_names)
+                company_key = company_name.lower()
+                company_meta = existing_client_by_name.get(company_key)
+                converted_company = bool(company_meta)
                 row_is_prospect = coerce_bool(row.get("is_prospect", False))
                 is_prospect = False if converted_company else row_is_prospect
-                if converted_company and new_status not in {"Qualified", "Lost"}:
+                # If a prior prospect now maps to an actual client company, mark the lifecycle transition explicitly.
+                if converted_company and row_is_prospect:
+                    new_status = "Converted"
+                    status_changed = new_status != current_status
+                elif converted_company and new_status not in {"Qualified", "Lost", "Converted"}:
                     new_status = "Qualified"
                     status_changed = new_status != current_status
+
+                # Keep lead geography in sync with canonical company geography after conversion.
+                canonical_country_code = company_meta.get("country_code") if company_meta else None
+                country_code = canonical_country_code or row.get("country_code") or sample_country_code(country_distribution)
+                canonical_company_name = company_meta.get("name") if company_meta else company_name
 
                 created_at = row.get("created_at") or self._random_created_at(
                     is_seed=True, now_ts=now_ts, month_probs=month_probs
@@ -232,17 +248,17 @@ class MarketingLeadsGenerator:
                     {
                         "lead_id": row.get("lead_id", fake.uuid4()),
                         "created_at": created_at,
-                        "company_name": company_name,
+                        "company_name": canonical_company_name,
                         "is_prospect": is_prospect,
                         "industry": row.get("industry", fake.bs().capitalize()),
-                        "contact_name": row.get("contact_name", localized_full_name(row.get("country_code"))),
+                        "contact_name": row.get("contact_name", localized_full_name(country_code)),
                         "contact_email": row.get("contact_email", fake.unique.company_email()),
-                        "contact_phone": row.get("contact_phone", localized_phone(row.get("country_code"))),
+                        "contact_phone": row.get("contact_phone", localized_phone(country_code)),
                         "lead_source": row.get("lead_source", random.choice(self.sources)),
                         "estimated_annual_revenue": float(
                             row.get("estimated_annual_revenue", random.randint(50000, 1000000))
                         ),
-                        "country_code": row.get("country_code", sample_country_code(country_distribution)),
+                        "country_code": country_code,
                         "status": new_status,
                         "status_updated_at": status_updated_at,
                         "last_activity_at": last_activity_at,
