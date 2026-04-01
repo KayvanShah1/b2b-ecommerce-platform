@@ -258,6 +258,7 @@ class WebLogGenerator:
             logger.info(f"Successfully wrote {len(df)} logs to {full_path}")
         except Exception as e:
             logger.error(f"Failed to write logs: {e}")
+            raise
 
 
 if __name__ == "__main__":
