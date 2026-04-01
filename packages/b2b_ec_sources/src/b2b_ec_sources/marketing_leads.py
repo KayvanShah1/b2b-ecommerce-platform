@@ -1,3 +1,5 @@
+"""Marketing lead generator with temporal behavior and geography-aware contact synthesis."""
+
 import random
 from datetime import datetime, timedelta
 
@@ -129,9 +131,11 @@ class MarketingLeadsGenerator:
 
     def _suggest_count(self, client_count: int, is_seed: bool, prev_count: int, now_ts: datetime) -> int:
         if is_seed:
+            # Seed run targets a large baseline anchored to current client-company count.
             base = max(self.params.min_seed_leads, int(client_count * self.params.seed_leads_per_company))
             return int(base * random.uniform(0.8, 1.2))
 
+        # Daily runs blend company-based expectation with previous run continuity.
         per_company = int(
             client_count
             * random.uniform(self.params.daily_leads_per_company_min, self.params.daily_leads_per_company_max)
@@ -174,6 +178,7 @@ class MarketingLeadsGenerator:
     @timed_run
     def generate(self, count: int | None = None):
         """Generates a B2B marketing leads CSV with Company-level data."""
+        # Step 1: detect run mode and initialize temporal/geography samplers for this execution.
         prev_df = self._load_previous_leads()
         is_seed = prev_df is None or prev_df.is_empty()
         now_ts = datetime.now()
@@ -185,6 +190,7 @@ class MarketingLeadsGenerator:
         )
         country_distribution = build_country_distribution()
 
+        # Step 2: estimate target row count from source-company context and prior run volume.
         existing_companies = self.get_existing_companies()
         prev_count = 0 if prev_df is None else prev_df.height
         target_count = count or self._suggest_count(len(existing_companies), is_seed, prev_count, now_ts)
@@ -193,7 +199,7 @@ class MarketingLeadsGenerator:
 
         leads: list[dict] = []
 
-        # 1) Carry over a subset of previous leads to keep timeline continuity
+        # Step 3: carry over and progress a subset of prior leads to preserve CRM continuity.
         carryover_count = 0
         if not is_seed and prev_df is not None and not prev_df.is_empty():
             carryover_count = min(int(target_count * self.params.carryover_ratio), prev_df.height)
@@ -234,7 +240,7 @@ class MarketingLeadsGenerator:
                     }
                 )
 
-        # 2) Generate new leads for this batch
+        # Step 4: synthesize new leads for the remaining quota.
         new_count = target_count - carryover_count
         for _ in range(new_count):
             use_existing_company = bool(existing_companies) and random.random() < self.params.existing_company_ratio
@@ -274,16 +280,14 @@ class MarketingLeadsGenerator:
                 }
             )
 
-        # 1. Create Polars DataFrame
         df = pl.DataFrame(leads)
 
-        # 2. Path Setup (Using your existing utility structure)
         filename = f"b2b_leads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         full_path = storage.get_marketing_leads_path(filename)
 
-        # 3. Write to Storage
         try:
-            # We convert to bytes for compatibility with storage.open 'wb' mode
+            # Step 5: write a single run artifact to object storage.
+            # Convert to bytes for compatibility with storage.open(..., mode='wb').
             csv_data = df.write_csv().encode("utf-8")
 
             with storage.open(full_path, mode="wb") as f:

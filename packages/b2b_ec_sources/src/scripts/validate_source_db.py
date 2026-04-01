@@ -1,7 +1,10 @@
+"""Validate source DB integrity and geography consistency of generated artifacts."""
+
+import argparse
 import json
+from contextlib import contextmanager
 
 import polars as pl
-
 from b2b_ec_sources import get_connection
 from b2b_ec_sources.geography import GEO
 from b2b_ec_utils.storage import storage
@@ -23,10 +26,7 @@ def _print_top_country_share(label: str, country_codes: list[str]) -> None:
     total = len(country_codes)
     top_count = sum(1 for c in country_codes if (c or "").upper() in top_set)
     share = top_count / total
-    print(
-        f"{label}: top-10 share = {share:.2%} ({top_count}/{total}) "
-        f"[target={GEO.top_country_share:.0%}]"
-    )
+    print(f"{label}: top-10 share = {share:.2%} ({top_count}/{total}) [target={GEO.top_country_share:.0%}]")
 
 
 def _print_check(name: str, issue_count: int) -> bool:
@@ -34,6 +34,16 @@ def _print_check(name: str, issue_count: int) -> bool:
     status = "PASS" if ok else "FAIL"
     print(f"{status}: {name} -> issues={issue_count}")
     return ok
+
+
+@contextmanager
+def _db_cursor():
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+    finally:
+        conn.close()
 
 
 def validate_source_db() -> None:
@@ -48,190 +58,185 @@ def validate_source_db() -> None:
     ]
 
     print("=== Source DB Validation ===")
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            missing_tables: list[str] = []
-            for table in required_tables:
-                cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
-                if cur.fetchone()[0] is None:
-                    missing_tables.append(table)
+    with _db_cursor() as cur:
+        missing_tables: list[str] = []
+        for table in required_tables:
+            cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+            if cur.fetchone()[0] is None:
+                missing_tables.append(table)
 
-            if missing_tables:
-                print(f"FAIL: Missing required tables: {', '.join(missing_tables)}")
-                return
+        if missing_tables:
+            print(f"FAIL: Missing required tables: {', '.join(missing_tables)}")
+            return
 
-            counts = {}
-            for table in required_tables:
-                cur.execute(f"SELECT COUNT(*) FROM {table}")
-                counts[table] = cur.fetchone()[0]
+        counts = {}
+        for table in required_tables:
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = cur.fetchone()[0]
 
-            print(
-                "Row counts: "
-                + ", ".join(f"{table}={counts[table]}" for table in required_tables)
-            )
+        print("Row counts: " + ", ".join(f"{table}={counts[table]}" for table in required_tables))
 
-            checks = [
-                (
-                    "companies.country_code exists in ref_countries",
-                    """
+        checks = [
+            (
+                "companies.country_code exists in ref_countries",
+                """
                     SELECT COUNT(*)
                     FROM companies c
                     LEFT JOIN ref_countries rc ON c.country_code = rc.code
                     WHERE rc.code IS NULL
                     """,
-                ),
-                (
-                    "companies.type is valid",
-                    """
+            ),
+            (
+                "companies.type is valid",
+                """
                     SELECT COUNT(*)
                     FROM companies
                     WHERE type IS NULL OR type NOT IN ('Supplier', 'Client')
                     """,
-                ),
-                (
-                    "products.supplier_cuit references companies",
-                    """
+            ),
+            (
+                "products.supplier_cuit references companies",
+                """
                     SELECT COUNT(*)
                     FROM products p
                     LEFT JOIN companies c ON p.supplier_cuit = c.cuit
                     WHERE c.cuit IS NULL
                     """,
-                ),
-                (
-                    "products owned by Supplier companies",
-                    """
+            ),
+            (
+                "products owned by Supplier companies",
+                """
                     SELECT COUNT(*)
                     FROM products p
                     JOIN companies c ON p.supplier_cuit = c.cuit
                     WHERE c.type <> 'Supplier'
                     """,
-                ),
-                (
-                    "customers.company_cuit references companies",
-                    """
+            ),
+            (
+                "customers.company_cuit references companies",
+                """
                     SELECT COUNT(*)
                     FROM customers cu
                     LEFT JOIN companies c ON cu.company_cuit = c.cuit
                     WHERE c.cuit IS NULL
                     """,
-                ),
-                (
-                    "customers belong to Client companies",
-                    """
+            ),
+            (
+                "customers belong to Client companies",
+                """
                     SELECT COUNT(*)
                     FROM customers cu
                     JOIN companies c ON cu.company_cuit = c.cuit
                     WHERE c.type <> 'Client'
                     """,
-                ),
-                (
-                    "company_catalogs.company_cuit references companies",
-                    """
+            ),
+            (
+                "company_catalogs.company_cuit references companies",
+                """
                     SELECT COUNT(*)
                     FROM company_catalogs cc
                     LEFT JOIN companies c ON cc.company_cuit = c.cuit
                     WHERE c.cuit IS NULL
                     """,
-                ),
-                (
-                    "company_catalogs company is Client",
-                    """
+            ),
+            (
+                "company_catalogs company is Client",
+                """
                     SELECT COUNT(*)
                     FROM company_catalogs cc
                     JOIN companies c ON cc.company_cuit = c.cuit
                     WHERE c.type <> 'Client'
                     """,
-                ),
-                (
-                    "company_catalogs.product_id references products",
-                    """
+            ),
+            (
+                "company_catalogs.product_id references products",
+                """
                     SELECT COUNT(*)
                     FROM company_catalogs cc
                     LEFT JOIN products p ON cc.product_id = p.id
                     WHERE p.id IS NULL
                     """,
-                ),
-                (
-                    "orders.customer_id references customers",
-                    """
+            ),
+            (
+                "orders.customer_id references customers",
+                """
                     SELECT COUNT(*)
                     FROM orders o
                     LEFT JOIN customers cu ON o.customer_id = cu.id
                     WHERE cu.id IS NULL
                     """,
-                ),
-                (
-                    "orders.company_cuit references companies",
-                    """
+            ),
+            (
+                "orders.company_cuit references companies",
+                """
                     SELECT COUNT(*)
                     FROM orders o
                     LEFT JOIN companies c ON o.company_cuit = c.cuit
                     WHERE c.cuit IS NULL
                     """,
-                ),
-                (
-                    "orders.company_cuit matches customers.company_cuit",
-                    """
+            ),
+            (
+                "orders.company_cuit matches customers.company_cuit",
+                """
                     SELECT COUNT(*)
                     FROM orders o
                     JOIN customers cu ON o.customer_id = cu.id
                     WHERE o.company_cuit <> cu.company_cuit
                     """,
-                ),
-                (
-                    "orders.status is valid",
-                    """
+            ),
+            (
+                "orders.status is valid",
+                """
                     SELECT COUNT(*)
                     FROM orders
                     WHERE status IS NULL OR status NOT IN ('COMPLETED', 'CANCELLED', 'RETURNED')
                     """,
-                ),
-                (
-                    "orders.total_amount is positive",
-                    """
+            ),
+            (
+                "orders.total_amount is positive",
+                """
                     SELECT COUNT(*)
                     FROM orders
                     WHERE COALESCE(total_amount, 0) <= 0
                     """,
-                ),
-                (
-                    "order_items.order_id references orders",
-                    """
+            ),
+            (
+                "order_items.order_id references orders",
+                """
                     SELECT COUNT(*)
                     FROM order_items oi
                     LEFT JOIN orders o ON oi.order_id = o.id
                     WHERE o.id IS NULL
                     """,
-                ),
-                (
-                    "order_items.product_id references products",
-                    """
+            ),
+            (
+                "order_items.product_id references products",
+                """
                     SELECT COUNT(*)
                     FROM order_items oi
                     LEFT JOIN products p ON oi.product_id = p.id
                     WHERE p.id IS NULL
                     """,
-                ),
-                (
-                    "order_items.quantity is positive",
-                    """
+            ),
+            (
+                "order_items.quantity is positive",
+                """
                     SELECT COUNT(*)
                     FROM order_items
                     WHERE COALESCE(quantity, 0) <= 0
                     """,
-                ),
-                (
-                    "order_items.unit_price is positive",
-                    """
+            ),
+            (
+                "order_items.unit_price is positive",
+                """
                     SELECT COUNT(*)
                     FROM order_items
                     WHERE COALESCE(unit_price, 0) <= 0
                     """,
-                ),
-                (
-                    "ordered products exist in buyer catalog",
-                    """
+            ),
+            (
+                "ordered products exist in buyer catalog",
+                """
                     SELECT COUNT(*)
                     FROM order_items oi
                     JOIN orders o ON oi.order_id = o.id
@@ -241,10 +246,10 @@ def validate_source_db() -> None:
                      AND cc.product_id = oi.product_id
                     WHERE cc.product_id IS NULL
                     """,
-                ),
-                (
-                    "orders.total_amount matches sum(order_items)",
-                    """
+            ),
+            (
+                "orders.total_amount matches sum(order_items)",
+                """
                     WITH item_totals AS (
                         SELECT order_id, ROUND(SUM(quantity * unit_price)::numeric, 2) AS items_total
                         FROM order_items
@@ -255,10 +260,10 @@ def validate_source_db() -> None:
                     JOIN item_totals it ON o.id = it.order_id
                     WHERE ABS(o.total_amount - it.items_total) > 0.05
                     """,
-                ),
-                (
-                    "customers.username is unique",
-                    """
+            ),
+            (
+                "customers.username is unique",
+                """
                     SELECT COUNT(*)
                     FROM (
                         SELECT username
@@ -267,10 +272,10 @@ def validate_source_db() -> None:
                         HAVING COUNT(*) > 1
                     ) t
                     """,
-                ),
-                (
-                    "customers.email is unique",
-                    """
+            ),
+            (
+                "customers.email is unique",
+                """
                     SELECT COUNT(*)
                     FROM (
                         SELECT email
@@ -279,32 +284,26 @@ def validate_source_db() -> None:
                         HAVING COUNT(*) > 1
                     ) t
                     """,
-                ),
-            ]
+            ),
+        ]
 
-            passed = 0
-            failed = 0
-            for check_name, sql in checks:
-                cur.execute(sql)
-                issue_count = cur.fetchone()[0]
-                if _print_check(check_name, issue_count):
-                    passed += 1
-                else:
-                    failed += 1
+        passed = 0
+        failed = 0
+        for check_name, sql in checks:
+            cur.execute(sql)
+            issue_count = cur.fetchone()[0]
+            if _print_check(check_name, issue_count):
+                passed += 1
+            else:
+                failed += 1
 
-            print(f"Source DB checks summary: PASS={passed} FAIL={failed}")
-    finally:
-        conn.close()
+        print(f"Source DB checks summary: PASS={passed} FAIL={failed}")
 
 
 def validate_company_distribution() -> None:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT country_code FROM companies")
-            country_codes = [row[0] for row in cur.fetchall()]
-    finally:
-        conn.close()
+    with _db_cursor() as cur:
+        cur.execute("SELECT country_code FROM companies")
+        country_codes = [row[0] for row in cur.fetchall()]
 
     _print_top_country_share("Companies", country_codes)
 
@@ -321,13 +320,9 @@ def validate_marketing_leads() -> None:
     lead_countries = leads_df.get_column("country_code").to_list()
     _print_top_country_share("Marketing leads", lead_countries)
 
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT name, country_code FROM companies WHERE type = 'Client'")
-            company_rows = [{"company_name": row[0], "company_country_code": row[1]} for row in cur.fetchall()]
-    finally:
-        conn.close()
+    with _db_cursor() as cur:
+        cur.execute("SELECT name, country_code FROM companies WHERE type = 'Client'")
+        company_rows = [{"company_name": row[0], "company_country_code": row[1]} for row in cur.fetchall()]
 
     if not company_rows:
         print("Marketing leads alignment: no client companies found")
@@ -343,10 +338,7 @@ def validate_marketing_leads() -> None:
 
     aligned = comparable.filter(pl.col("country_code") == pl.col("company_country_code")).height
     alignment_ratio = aligned / comparable.height
-    print(
-        f"Marketing leads alignment (existing-company leads): "
-        f"{alignment_ratio:.2%} ({aligned}/{comparable.height})"
-    )
+    print(f"Marketing leads alignment (existing-company leads): {alignment_ratio:.2%} ({aligned}/{comparable.height})")
 
 
 def validate_web_logs(max_rows: int = 20000) -> None:
@@ -394,20 +386,16 @@ def validate_web_logs(max_rows: int = 20000) -> None:
         print("Web logs alignment: no authenticated rows")
         return
 
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT cust.username, comp.country_code
-                FROM customers AS cust
-                LEFT JOIN companies AS comp
-                  ON cust.company_cuit = comp.cuit
-                """
-            )
-            user_rows = [{"username": row[0], "user_country_code": row[1]} for row in cur.fetchall()]
-    finally:
-        conn.close()
+    with _db_cursor() as cur:
+        cur.execute(
+            """
+            SELECT cust.username, comp.country_code
+            FROM customers AS cust
+            LEFT JOIN companies AS comp
+              ON cust.company_cuit = comp.cuit
+            """
+        )
+        user_rows = [{"username": row[0], "user_country_code": row[1]} for row in cur.fetchall()]
 
     user_df = pl.DataFrame(user_rows)
     joined = auth_df.join(user_df, on="username", how="left")
@@ -418,19 +406,30 @@ def validate_web_logs(max_rows: int = 20000) -> None:
 
     aligned = comparable.filter(pl.col("country_code") == pl.col("user_country_code")).height
     alignment_ratio = aligned / comparable.height
-    print(
-        f"Web logs alignment (authenticated rows only): "
-        f"{alignment_ratio:.2%} ({aligned}/{comparable.height})"
-    )
+    print(f"Web logs alignment (authenticated rows only): {alignment_ratio:.2%} ({aligned}/{comparable.height})")
 
 
-def main() -> None:
+def main(max_web_log_rows: int = 20000) -> None:
     validate_source_db()
     print("=== Geography Validation ===")
     validate_company_distribution()
     validate_marketing_leads()
-    validate_web_logs()
+    validate_web_logs(max_rows=max_web_log_rows)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Validate source DB integrity and geography consistency.")
+    parser.add_argument(
+        "--max-web-log-rows",
+        type=int,
+        default=20000,
+        help="Maximum number of web-log rows to scan from the latest JSONL file (default: 20000).",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    main()
+    args = _parse_args()
+    if args.max_web_log_rows < 1:
+        raise ValueError("--max-web-log-rows must be >= 1")
+    main(max_web_log_rows=args.max_web_log_rows)

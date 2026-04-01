@@ -261,9 +261,23 @@ Recommended one-shot:
 uv run python packages/b2b_ec_sources/src/scripts/generate_all.py
 ```
 
+Run with explicit evolution cycles:
+```bash
+uv run python packages/b2b_ec_sources/src/scripts/generate_all.py --cycles 3
+```
+
+Note:
+1. `--cycles` controls additional runs after the first run.
+2. `--cycles 0` means one run only.
+
 Source DB validation:
 ```bash
 uv run python packages/b2b_ec_sources/src/scripts/validate_source_db.py
+```
+
+Validation with limited web-log scan:
+```bash
+uv run python packages/b2b_ec_sources/src/scripts/validate_source_db.py --max-web-log-rows 10000
 ```
 
 Individual commands:

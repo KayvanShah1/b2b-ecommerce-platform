@@ -1,3 +1,5 @@
+"""Web log generator aligned with source users, temporal patterns, and geography."""
+
 import json
 import random
 import uuid
@@ -72,7 +74,7 @@ W = WLGParameters()
 
 class WebLogGenerator:
     def __init__(self):
-        # 1. Expanded User Agent Pool (B2B Corporate bias)
+        # Corporate-heavy user-agent mix to resemble B2B traffic.
         self.ua_pool = {
             "Win-Chrome-120": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Win-Edge-120": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/120.0.0.0",
@@ -86,8 +88,7 @@ class WebLogGenerator:
         self.ua_keys = list(self.ua_pool.keys())
         self.ua_weights = [0.40, 0.15, 0.10, 0.10, 0.05, 0.08, 0.07, 0.05]
 
-        # 2. Weighted Endpoints & Status Codes
-        # Format: (Method, Path, [(StatusCode, Weight), ...], GlobalPathWeight)
+        # Format: (method, path, [(status_code, weight), ...], path_weight)
         self.endpoints = [
             ("GET", "/api/v1/catalog", [(200, 95), (404, 5)], 40),
             ("GET", "/api/v1/products", [(200, 98), (404, 2)], 30),
@@ -114,6 +115,7 @@ class WebLogGenerator:
             conn.close()
 
     def _partition_users(self, users: list[dict], now_ts: datetime):
+        # Split users into recent-vs-returning cohorts for daily traffic mixing.
         cutoff = now_ts - timedelta(days=W.NEW_USER_LOOKBACK_DAYS)
         recent, returning = [], []
         for u in users:
@@ -126,8 +128,10 @@ class WebLogGenerator:
 
     def _pick_user(self, users: list[dict], returning_users: list[dict], recent_users: list[dict], is_seed: bool):
         if is_seed:
+            # Seed mode does not enforce cohort bias; sample full user population.
             return random.choice(users)
 
+        # Daily mode favors returning users but still injects new-user traffic.
         if returning_users and recent_users:
             total_weight = W.AUTH_RETURNING_USER_RATIO + W.AUTH_NEW_USER_RATIO
             p_returning = W.AUTH_RETURNING_USER_RATIO / total_weight
@@ -144,7 +148,8 @@ class WebLogGenerator:
 
     @timed_run
     def generate(self, log_count=None):
-        # Check for existing seed data to determine mode
+        # Step 1: establish run mode and initialize temporal/geography samplers.
+        # Decide between one-time seed generation and daily incremental logs.
         seed_path = storage.get_webserver_logs_path(True, "*.jsonl")
         is_seed = len(storage.glob(seed_path)) == 0
         now_ts = datetime.now()
@@ -160,9 +165,11 @@ class WebLogGenerator:
         if not users:
             logger.error("No users found in Postgres. Seed the database first.")
             return
+        # Step 2: derive user cohorts used for daily authenticated traffic selection.
         returning_users, recent_users = self._partition_users(users, now_ts)
 
-        # Volume: 100k for initial history; daily increments now follow seasonal volume
+        # Step 3: decide output volume.
+        # Seed uses a large baseline; daily runs use seasonal volume sampling.
         if log_count is not None:
             count = log_count
         elif is_seed:
@@ -184,17 +191,18 @@ class WebLogGenerator:
 
         logger.info(f"Generating {count} JSONL logs ({'SEED' if is_seed else 'DAILY'})")
 
+        # Step 4: synthesize events with consistent user/time/endpoint relationships.
         for _ in range(count):
             user_meta = self._pick_user(users, returning_users, recent_users, is_seed)
 
-            # Unauthenticated traffic share remains configurable
+            # Keep a configurable unauthenticated traffic share.
             username = "-" if random.random() < W.UNAUTH_TRAFFIC_RATIO else user_meta["username"]
             if username == "-":
                 country_code = sample_country_code(country_distribution)
             else:
                 country_code = user_meta.get("country_code") or sample_country_code(country_distribution)
 
-            # Timestamp follows seasonal distribution but stays after user creation
+            # Ensure event timestamps are not earlier than the user creation time.
             window_days = W.SEED_DISTRIBUTION_DAYS if is_seed else W.DAILY_DISTRIBUTION_DAYS
             window_start = now_ts - timedelta(days=max(1, int(window_days)))
             created_at = user_meta.get("created_at")
@@ -212,17 +220,13 @@ class WebLogGenerator:
                 clamp_jitter_to_bucket=W.CLAMP_JITTER_TO_BUCKET,
             )
 
-            # Weighted selection of endpoint
             ep = random.choices(self.endpoints, weights=[e[3] for e in self.endpoints])[0]
             method, path, status_map = ep[0], ep[1], ep[2]
 
-            # Weighted selection of status code for that specific endpoint
             status = random.choices([s[0] for s in status_map], weights=[s[1] for s in status_map])[0]
 
-            # Select User Agent
             ua = self.ua_pool[random.choices(self.ua_keys, weights=self.ua_weights)[0]]
 
-            # Construct the JSON Record
             log_entry = {
                 "event_id": uuid.uuid4().hex,
                 "remote_host": sample_ip_for_country(country_code),
@@ -240,13 +244,12 @@ class WebLogGenerator:
             }
             logs.append({"ts": dt, "data": log_entry})
 
-        # Chronological sorting using Polars
         df = pl.DataFrame(logs).sort("ts")
 
         filename = f"access_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
         full_path = storage.get_webserver_logs_path(is_seed, filename)
 
-        # Serialize to JSON Lines (JSONL)
+        # Step 5: persist one JSONL artifact for this run.
         jsonl_payload = "\n".join([json.dumps(row) for row in df["data"].to_list()]) + "\n"
 
         try:

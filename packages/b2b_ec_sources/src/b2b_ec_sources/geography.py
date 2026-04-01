@@ -1,3 +1,5 @@
+"""Shared geography model for country sampling, locale projection, and trade-lane logic."""
+
 import ipaddress
 import random
 from functools import cache, lru_cache
@@ -124,16 +126,20 @@ def _rest_country_codes() -> list[str]:
 
 
 def build_country_distribution() -> dict[str, object]:
+    # Build one run-level distribution so generators can sample consistently within a cycle.
     iso_set = set(all_iso_codes())
+    # Step 1: keep only configured "top economy" codes that are present in ISO reference data.
     top_pairs = [
         (code.upper(), weight)
         for code, weight in zip(GEO.top_country_codes, GEO.top_country_weights, strict=False)
         if code.upper() in iso_set
     ]
     if not top_pairs:
+        # Step 2: always keep a safe fallback distribution when configuration is empty/invalid.
         top_pairs = [("US", 1.0)] if "US" in iso_set else [(next(iter(iso_set)), 1.0)]
 
     top_codes = [pair[0] for pair in top_pairs]
+    # Step 3: jitter weights per run to avoid identical geography every cycle.
     top_weights = jittered_weights([pair[1] for pair in top_pairs], sigma=GEO.country_weight_noise_sigma)
     top_share = GEO.top_country_share + random.gauss(0.0, GEO.country_weight_noise_sigma * 0.25)
     top_share = min(0.95, max(0.05, top_share))
@@ -152,6 +158,7 @@ def sample_country_code(distribution: dict[str, object] | None = None) -> str:
     top_share = float(dist["top_share"])
     rest_codes: list[str] = list(dist["rest_codes"])
 
+    # Two-stage sampling: first choose top-vs-rest lane, then sample inside that lane.
     if top_codes and random.random() < top_share:
         return random.choices(top_codes, weights=top_weights, k=1)[0]
     if rest_codes:
@@ -167,9 +174,11 @@ def country_weight_for_sampling(country_code: str, distribution: dict[str, objec
     top_share = float(dist["top_share"])
     rest_codes: list[str] = list(dist["rest_codes"])
 
+    # Preserve top-country relative mass while enforcing a minimum floor.
     if code in top_codes:
         idx = top_codes.index(code)
         return max(GEO.min_weight_floor, top_weights[idx] * top_share)
+    # Split remaining mass uniformly across non-top countries.
     rest_share = max(GEO.min_weight_floor, 1.0 - top_share)
     rest_count = max(1, len(rest_codes))
     return max(GEO.min_weight_floor, rest_share / rest_count)
@@ -230,6 +239,7 @@ def classify_trade_lane(client_country_code: str | None, supplier_country_code: 
 
 
 def sample_trade_lane() -> str:
+    # Re-sample lane weights per call so domestic/regional/global mix has mild run-to-run noise.
     lane_weights = jittered_weights(
         [GEO.trade_domestic_share, GEO.trade_regional_share, GEO.trade_global_share],
         sigma=GEO.trade_lane_noise_sigma,
@@ -244,6 +254,7 @@ def _sample_ipv4_from_network(cidr: str) -> str:
         return str(network.network_address)
     first = int(network.network_address) + 1
     last = int(network.broadcast_address) - 1
+    # Retry a few times to avoid reserved/private picks in mixed CIDR blocks.
     for _ in range(16):
         value = random.randint(first, last)
         addr = ipaddress.IPv4Address(value)

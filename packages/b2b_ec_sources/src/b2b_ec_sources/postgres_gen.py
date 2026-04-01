@@ -1,3 +1,5 @@
+"""Relational source generator for seed baseline and ongoing market evolution."""
+
 import random
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -94,11 +96,13 @@ DEFAULT_LOGGER = get_logger("SourceDBGeneration")
 
 class CommerceSourceDataGenerator:
     def __init__(self, params: CSDGParameters | None = None):
+        """Initialize generator dependencies and runtime parameters."""
         self.params = params or DEFAULT_CSDG_PARAMS
         self.fake = DEFAULT_FAKE
         self.logger = DEFAULT_LOGGER
 
     def _pg_bulk_copy(self, conn, df: pl.DataFrame, table_name: str):
+        """Copy a Polars dataframe into Postgres using COPY FROM for performance."""
         if df.is_empty():
             return
         buffer = BytesIO()
@@ -108,7 +112,14 @@ class CommerceSourceDataGenerator:
             cursor.copy_from(buffer, table_name, sep="|", columns=df.columns)
         conn.commit()
 
+    def _pg_bulk_copy_rows(self, conn, rows: list[dict], table_name: str):
+        """Convenience wrapper for bulk-copying list-of-dict payloads."""
+        if not rows:
+            return
+        self._pg_bulk_copy(conn, pl.DataFrame(rows), table_name)
+
     def _create_schema(self, cur):
+        """Create all relational source tables if they do not exist."""
         self.logger.info("SCHEMA: Initializing Relational Tables with Audit Columns...")
         cur.execute(
             """
@@ -170,6 +181,7 @@ class CommerceSourceDataGenerator:
         )
 
     def _generate_customer_data(self, company_cuit, company_country_code=None, backdate_from="-1y"):
+        """Generate one customer row aligned to a company and country locale."""
         fn, ln = localized_first_last_name(company_country_code)
         username = self.fake.unique.bothify("u######_#####")
         return {
@@ -185,20 +197,24 @@ class CommerceSourceDataGenerator:
         }
 
     def _sample_base_price(self) -> float:
+        """Sample one product base price within configured bounds."""
         min_price, max_price = ordered_bounds(float(self.params.min_base_price), float(self.params.max_base_price))
         return round(random.uniform(min_price, max_price), 2)
 
     def _sample_items_per_order(self) -> int:
+        """Sample item count for a single order."""
         min_items, max_items = ordered_bounds(
             int(self.params.min_items_per_order), int(self.params.max_items_per_order)
         )
         return random.randint(min_items, max_items)
 
     def _sample_item_quantity(self) -> int:
+        """Sample quantity for one order line."""
         min_qty, max_qty = ordered_bounds(int(self.params.min_item_quantity), int(self.params.max_item_quantity))
         return random.randint(min_qty, max_qty)
 
     def _build_calendar_month_probabilities(self) -> np.ndarray:
+        """Build month probability vector used by temporal samplers."""
         return build_month_probability_vector(
             base_month_weights=self.params.base_month_weights,
             seasonality_amplitude=self.params.seasonality_amplitude,
@@ -207,6 +223,7 @@ class CommerceSourceDataGenerator:
         )
 
     def _sample_incremental_order_volume(self, now_ts: datetime) -> int:
+        """Sample daily incremental order count with seasonal weighting."""
         return sample_seasonal_volume(
             min_count=self.params.min_inc_orders,
             max_count=self.params.max_inc_orders,
@@ -220,12 +237,14 @@ class CommerceSourceDataGenerator:
         )
 
     def _get_distribution_window_start(self, now_ts: datetime, is_seed: bool) -> datetime:
+        """Return lower time bound for seed/evolution order date sampling."""
         window_days = self.params.seed_distribution_days if is_seed else self.params.incremental_distribution_days
         return now_ts - timedelta(days=max(1, int(window_days)))
 
     def _sample_order_date_with_temporal_pattern(
         self, customer_created_at: datetime | None, now_ts: datetime, month_probs: np.ndarray, is_seed: bool
     ) -> datetime:
+        """Sample one order timestamp constrained by customer lifecycle and temporal shape."""
         window_start = self._get_distribution_window_start(now_ts, is_seed)
         if customer_created_at is None:
             customer_created_at = window_start
@@ -245,13 +264,42 @@ class CommerceSourceDataGenerator:
         )
 
     def _sample_supplier_cuit(self, supplier_cuits, company_country_by_cuit, country_distribution):
+        """Sample supplier with country-aware weighting from the configured distribution."""
         if not supplier_cuits:
             raise ValueError("supplier_cuits cannot be empty")
         supplier_countries = [company_country_by_cuit.get(cuit, "") for cuit in supplier_cuits]
         weights = country_sampling_weights(supplier_countries, distribution=country_distribution)
         return random.choices(supplier_cuits, weights=weights, k=1)[0]
 
+    def _fetch_products_with_supplier_country(self, cur, company_country_by_cuit):
+        """Fetch products and enrich each with supplier country code."""
+        cur.execute("SELECT id, base_price, created_at, supplier_cuit FROM products")
+        return [
+            {
+                "id": row[0],
+                "base_price": float(row[1]),
+                "created_at": row[2],
+                "supplier_cuit": row[3],
+                "supplier_country_code": company_country_by_cuit.get(row[3]),
+            }
+            for row in cur.fetchall()
+        ]
+
+    def _fetch_catalogs(self, cur):
+        """Fetch catalogs as company->[(product_id, sale_price)] mapping."""
+        cur.execute("SELECT product_id, company_cuit, sale_price FROM company_catalogs")
+        catalogs = {}
+        for pid, cuit, price in cur.fetchall():
+            catalogs.setdefault(cuit, []).append((pid, float(price)))
+        return catalogs
+
+    def _fetch_customer_info(self, cur):
+        """Fetch customer info keyed by customer id for order synthesis."""
+        cur.execute("SELECT id, company_cuit, created_at FROM customers")
+        return {row[0]: {"cuit": row[1], "created_at": row[2]} for row in cur.fetchall()}
+
     def _build_catalog_entries_for_client(self, client_cuit, client_country_code, product_rows, now_ts):
+        """Build one client's catalog using domestic/regional/global trade-lane sampling."""
         target_size = min(self.params.catalog_size_seed, len(product_rows))
         if target_size <= 0:
             return []
@@ -300,190 +348,168 @@ class CommerceSourceDataGenerator:
 
         return selected_rows
 
-    def _generate_batch(self, conn, num_orders=1000, is_seed=False, base_stats=None):
-        stats = {"cust": 0, "prod": 0, "returns": 0, "new_co": 0, "price_upd": 0}
-        if base_stats:
-            stats.update(base_stats)
-        country_distribution = build_country_distribution()
+    def _evolve_market_state(self, conn, cur, stats, country_distribution):
+        """Mutate company/product/customer state for one evolution run."""
+        # Step 1: capture current company state used by all evolution mutations.
+        cur.execute("SELECT cuit, type, country_code FROM companies")
+        all_cos = cur.fetchall()
+        client_cuits = [c[0] for c in all_cos if c[1] == "Client"]
+        sup_cuits = [c[0] for c in all_cos if c[1] == "Supplier"]
+        company_country_by_cuit = {c[0]: c[2] for c in all_cos}
 
-        with conn.cursor() as cur:
-            if not is_seed:
-                cur.execute("SELECT cuit, type, country_code FROM companies")
-                all_cos = cur.fetchall()
-                client_cuits = [c[0] for c in all_cos if c[1] == "Client"]
-                sup_cuits = [c[0] for c in all_cos if c[1] == "Supplier"]
-                company_country_by_cuit = {c[0]: c[2] for c in all_cos}
-
-                num_slots = random.randint(self.params.min_event_slots, self.params.max_event_slots)
-                for _ in range(num_slots):
-                    if random.random() < self.params.prob_new_company:
-                        new_cuit = self.fake.unique.bothify("##-########-#")
-                        co_type = random.choices(
-                            ["Supplier", "Client"],
-                            weights=[self.params.prob_supplier, self.params.prob_client],
-                        )[0]
-                        new_country_code = sample_country_code(country_distribution)
-                        now_ts = datetime.now()
-                        cur.execute(
-                            "INSERT INTO companies (cuit, name, type, country_code, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s)",
-                            (
-                                new_cuit,
-                                localized_company_name(new_country_code),
-                                co_type,
-                                new_country_code,
-                                now_ts,
-                                now_ts,
-                            ),
-                        )
-                        company_country_by_cuit[new_cuit] = new_country_code
-
-                        if co_type == "Client":
-                            cur.execute("SELECT id, base_price, created_at, supplier_cuit FROM products")
-                            p_list = [
-                                {
-                                    "id": row[0],
-                                    "base_price": float(row[1]),
-                                    "created_at": row[2],
-                                    "supplier_cuit": row[3],
-                                    "supplier_country_code": company_country_by_cuit.get(row[3]),
-                                }
-                                for row in cur.fetchall()
-                            ]
-                            catalog_rows = self._build_catalog_entries_for_client(
-                                client_cuit=new_cuit,
-                                client_country_code=new_country_code,
-                                product_rows=p_list,
-                                now_ts=now_ts,
-                            )
-                            self._pg_bulk_copy(
-                                conn,
-                                pl.DataFrame(catalog_rows),
-                                "company_catalogs",
-                            )
-                            client_cuits.append(new_cuit)
-                        else:
-                            self._pg_bulk_copy(
-                                conn,
-                                pl.DataFrame(
-                                    [
-                                        {
-                                            "name": f"SKU_{self.fake.word()}",
-                                            "supplier_cuit": new_cuit,
-                                            "base_price": self._sample_base_price(),
-                                            "created_at": now_ts,
-                                            "updated_at": now_ts,
-                                        }
-                                        for _ in range(max(1, int(self.params.new_supplier_products)))
-                                    ]
-                                ),
-                                "products",
-                            )
-                            sup_cuits.append(new_cuit)
-                        stats["new_co"] += 1
-
-                    if random.random() < self.params.prob_price_update:
-                        target_sup = self._sample_supplier_cuit(sup_cuits, company_country_by_cuit, country_distribution)
-                        cur.execute(
-                            "UPDATE products SET base_price = base_price * %s, updated_at = NOW() WHERE supplier_cuit = %s",
-                            (random.uniform(0.95, 1.10), target_sup),
-                        )
-                        cur.execute(
-                            """
-                            UPDATE company_catalogs cc
-                            SET sale_price = p.base_price * 1.4, updated_at = NOW()
-                            FROM products p WHERE cc.product_id = p.id AND p.supplier_cuit = %s
-                            """,
-                            (target_sup,),
-                        )
-                        stats["price_upd"] += 1
-
-                num_new_custs = max(
-                    1,
-                    int(
-                        len(client_cuits)
-                        * np.random.uniform(self.params.min_target_cust_growth, self.params.max_target_cust_growth)
-                    ),
-                )
-                client_weights = country_sampling_weights(
-                    [company_country_by_cuit.get(cuit, "") for cuit in client_cuits],
-                    distribution=country_distribution,
-                )
-                customer_company_cuits = random.choices(client_cuits, weights=client_weights, k=num_new_custs)
-                self._pg_bulk_copy(
-                    conn,
-                    pl.DataFrame(
-                        [
-                            self._generate_customer_data(
-                                company_cuit=cuit,
-                                company_country_code=company_country_by_cuit.get(cuit),
-                                backdate_from="-1d",
-                            )
-                            for cuit in customer_company_cuits
-                        ]
-                    ),
-                    "customers",
-                )
-
-                num_new_prods = max(
-                    1,
-                    int(
-                        self.params.seed_total_products
-                        * np.random.uniform(self.params.min_target_prod_growth, self.params.max_target_prod_growth)
-                    ),
-                )
+        # Step 2: run a small number of random event slots (new company / price shift).
+        num_slots = random.randint(self.params.min_event_slots, self.params.max_event_slots)
+        for _ in range(num_slots):
+            if random.random() < self.params.prob_new_company:
+                new_cuit = self.fake.unique.bothify("##-########-#")
+                co_type = random.choices(
+                    ["Supplier", "Client"],
+                    weights=[self.params.prob_supplier, self.params.prob_client],
+                )[0]
+                new_country_code = sample_country_code(country_distribution)
                 now_ts = datetime.now()
-                self._pg_bulk_copy(
-                    conn,
-                    pl.DataFrame(
+                cur.execute(
+                    "INSERT INTO companies (cuit, name, type, country_code, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (
+                        new_cuit,
+                        localized_company_name(new_country_code),
+                        co_type,
+                        new_country_code,
+                        now_ts,
+                        now_ts,
+                    ),
+                )
+                company_country_by_cuit[new_cuit] = new_country_code
+
+                if co_type == "Client":
+                    p_list = self._fetch_products_with_supplier_country(cur, company_country_by_cuit)
+                    catalog_rows = self._build_catalog_entries_for_client(
+                        client_cuit=new_cuit,
+                        client_country_code=new_country_code,
+                        product_rows=p_list,
+                        now_ts=now_ts,
+                    )
+                    self._pg_bulk_copy_rows(conn, catalog_rows, "company_catalogs")
+                    client_cuits.append(new_cuit)
+                else:
+                    self._pg_bulk_copy_rows(
+                        conn,
                         [
                             {
-                                "name": f"Prod_{self.fake.word()}",
-                                "supplier_cuit": self._sample_supplier_cuit(
-                                    sup_cuits, company_country_by_cuit, country_distribution
-                                ),
+                                "name": f"SKU_{self.fake.word()}",
+                                "supplier_cuit": new_cuit,
                                 "base_price": self._sample_base_price(),
                                 "created_at": now_ts,
                                 "updated_at": now_ts,
                             }
-                            for _ in range(num_new_prods)
-                        ]
-                    ),
-                    "products",
-                )
-                stats.update({"cust": num_new_custs, "prod": num_new_prods})
+                            for _ in range(max(1, int(self.params.new_supplier_products)))
+                        ],
+                        "products",
+                    )
+                    sup_cuits.append(new_cuit)
+                stats["new_co"] += 1
 
-                window_start, window_end = datetime.now() - timedelta(days=7), datetime.now() - timedelta(days=3)
+            if sup_cuits and random.random() < self.params.prob_price_update:
+                target_sup = self._sample_supplier_cuit(sup_cuits, company_country_by_cuit, country_distribution)
                 cur.execute(
-                    "SELECT id FROM orders WHERE status = 'COMPLETED' AND order_date BETWEEN %s AND %s",
-                    (window_start, window_end),
+                    "UPDATE products SET base_price = base_price * %s, updated_at = NOW() WHERE supplier_cuit = %s",
+                    (random.uniform(0.95, 1.10), target_sup),
                 )
-                eligible = [r[0] for r in cur.fetchall()]
-                if eligible:
-                    to_ret = random.sample(
-                        eligible,
-                        max(
-                            1,
-                            int(
-                                len(eligible) * random.uniform(self.params.min_return_rate, self.params.max_return_rate)
-                            ),
+                cur.execute(
+                    """
+                    UPDATE company_catalogs cc
+                    SET sale_price = p.base_price * 1.4, updated_at = NOW()
+                    FROM products p WHERE cc.product_id = p.id AND p.supplier_cuit = %s
+                    """,
+                    (target_sup,),
+                )
+                stats["price_upd"] += 1
+
+        # Step 3: apply steady-state customer growth against current client base.
+        if client_cuits:
+            num_new_custs = max(
+                1,
+                int(
+                    len(client_cuits)
+                    * np.random.uniform(self.params.min_target_cust_growth, self.params.max_target_cust_growth)
+                ),
+            )
+            client_weights = country_sampling_weights(
+                [company_country_by_cuit.get(cuit, "") for cuit in client_cuits],
+                distribution=country_distribution,
+            )
+            customer_company_cuits = random.choices(client_cuits, weights=client_weights, k=num_new_custs)
+            self._pg_bulk_copy_rows(
+                conn,
+                [
+                    self._generate_customer_data(
+                        company_cuit=cuit,
+                        company_country_code=company_country_by_cuit.get(cuit),
+                        backdate_from="-1d",
+                    )
+                    for cuit in customer_company_cuits
+                ],
+                "customers",
+            )
+            stats["cust"] = num_new_custs
+        else:
+            self.logger.warning("EVOLUTION: No client companies available for customer growth.")
+
+        # Step 4: apply steady-state product growth against current supplier base.
+        if sup_cuits:
+            num_new_prods = max(
+                1,
+                int(
+                    self.params.seed_total_products
+                    * np.random.uniform(self.params.min_target_prod_growth, self.params.max_target_prod_growth)
+                ),
+            )
+            now_ts = datetime.now()
+            self._pg_bulk_copy_rows(
+                conn,
+                [
+                    {
+                        "name": f"Prod_{self.fake.word()}",
+                        "supplier_cuit": self._sample_supplier_cuit(
+                            sup_cuits, company_country_by_cuit, country_distribution
                         ),
-                    )
-                    cur.execute(
-                        "UPDATE orders SET status = 'RETURNED', updated_at = NOW() WHERE id = ANY(%s)", (to_ret,)
-                    )
-                    stats["returns"] = len(to_ret)
+                        "base_price": self._sample_base_price(),
+                        "created_at": now_ts,
+                        "updated_at": now_ts,
+                    }
+                    for _ in range(num_new_prods)
+                ],
+                "products",
+            )
+            stats["prod"] = num_new_prods
+        else:
+            self.logger.warning("EVOLUTION: No supplier companies available for product growth.")
 
-            cur.execute("SELECT product_id, company_cuit, sale_price FROM company_catalogs")
-            catalogs = {}
-            for pid, cuit, price in cur.fetchall():
-                catalogs.setdefault(cuit, []).append((pid, float(price)))
-            cur.execute("SELECT id, company_cuit, created_at FROM customers")
-            cust_info = {r[0]: {"cuit": r[1], "created_at": r[2]} for r in cur.fetchall()}
+        # Step 5: mark a portion of older completed orders as returned.
+        window_start, window_end = datetime.now() - timedelta(days=7), datetime.now() - timedelta(days=3)
+        cur.execute(
+            "SELECT id FROM orders WHERE status = 'COMPLETED' AND order_date BETWEEN %s AND %s",
+            (window_start, window_end),
+        )
+        eligible = [r[0] for r in cur.fetchall()]
+        if eligible:
+            to_ret = random.sample(
+                eligible,
+                max(
+                    1,
+                    int(len(eligible) * random.uniform(self.params.min_return_rate, self.params.max_return_rate)),
+                ),
+            )
+            cur.execute("UPDATE orders SET status = 'RETURNED', updated_at = NOW() WHERE id = ANY(%s)", (to_ret,))
+            stats["returns"] = len(to_ret)
 
+    def _build_order_payload(self, catalogs, cust_info, num_orders, is_seed):
+        """Build order and order-item payloads from current catalog/customer state."""
         order_list, items_by_order = [], []
         now_ts = datetime.now()
         calendar_month_probs = self._build_calendar_month_probabilities()
         valid_customers = []
+        # Step 1: keep only customers whose company currently has a purchasable catalog.
         for cid, meta in cust_info.items():
             cat = catalogs.get(meta["cuit"], [])
             if not cat:
@@ -493,8 +519,9 @@ class CommerceSourceDataGenerator:
 
         if not valid_customers:
             self.logger.warning("BATCH: No eligible customers with catalogs found. Skipping order generation.")
-            return
+            return order_list, items_by_order
 
+        # Step 2: pre-sample and sort order dates so customer eligibility respects lifecycle timing.
         valid_customers.sort(key=lambda x: x["created_at"])
         sampled_order_dates = [
             self._sample_order_date_with_temporal_pattern(
@@ -509,6 +536,7 @@ class CommerceSourceDataGenerator:
 
         customer_cursor = 0
         eligible_customers = []
+        # Step 3: for each sampled date, pick an eligible customer and synthesize line items.
         for o_date in sampled_order_dates:
             while customer_cursor < len(valid_customers) and valid_customers[customer_cursor]["created_at"] <= o_date:
                 eligible_customers.append(valid_customers[customer_cursor])
@@ -554,11 +582,17 @@ class CommerceSourceDataGenerator:
             self.logger.warning(
                 f"BATCH: Generated {len(order_list)} of {num_orders} requested orders due to customer eligibility by date."
             )
+        return order_list, items_by_order
 
-        self._pg_bulk_copy(conn, pl.DataFrame(order_list), "orders")
+    def _persist_orders_and_items(self, conn, order_list, items_by_order):
+        """Persist generated orders and items and return inserted counts."""
+        if not order_list:
+            return 0, 0
+
+        self._pg_bulk_copy_rows(conn, order_list, "orders")
 
         with conn.cursor() as cur:
-            cur.execute(f"SELECT id FROM orders ORDER BY id DESC LIMIT {len(order_list)}")
+            cur.execute("SELECT id FROM orders ORDER BY id DESC LIMIT %s", (len(order_list),))
             new_ids = [r[0] for r in cur.fetchall()][::-1]
 
         final_items = []
@@ -566,24 +600,48 @@ class CommerceSourceDataGenerator:
             for item in items_by_order[i]:
                 item["order_id"] = oid
                 final_items.append(item)
-        self._pg_bulk_copy(conn, pl.DataFrame(final_items), "order_items")
+        self._pg_bulk_copy_rows(conn, final_items, "order_items")
+        return len(order_list), len(final_items)
 
+    def _generate_batch(self, conn, num_orders=1000, is_seed=False, base_stats=None):
+        """Run one order-generation batch, optionally including evolution-side mutations."""
+        stats = {"cust": 0, "prod": 0, "returns": 0, "new_co": 0, "price_upd": 0}
+        if base_stats:
+            stats.update(base_stats)
+        country_distribution = build_country_distribution()
+
+        # Step 1: refresh state snapshots; evolution mode mutates entity state before order generation.
+        with conn.cursor() as cur:
+            if not is_seed:
+                self._evolve_market_state(conn, cur, stats, country_distribution)
+
+            catalogs = self._fetch_catalogs(cur)
+            cust_info = self._fetch_customer_info(cur)
+
+        # Step 2: build and persist transactional payloads.
+        order_list, items_by_order = self._build_order_payload(catalogs, cust_info, num_orders, is_seed)
+        order_count, item_count = self._persist_orders_and_items(conn, order_list, items_by_order)
+
+        # Step 3: emit concise run telemetry for monitoring.
         mode_label = "SEED" if is_seed else "EVOLUTION"
         self.logger.info(
             f"BATCH SUMMARY [{mode_label}]: +{stats['new_co']} Co, +{stats['cust']} Cust, "
             f"+{stats['prod']} Prod, +{stats['price_upd']} PriceShift, +{stats['returns']} Returns, "
-            f"+{len(order_list)} Orders (+{len(final_items)} Items)"
+            f"+{order_count} Orders (+{item_count} Items)"
         )
 
     @timed_run
     def generate(self):
+        """Run seed initialization once, then evolution-mode updates on later runs."""
         conn = get_connection()
         try:
+            # Step 1: detect whether source tables already exist.
             with conn.cursor() as cur:
                 cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'orders')")
                 initialized = cur.fetchone()[0]
 
             if not initialized:
+                # Step 2 (seed): bootstrap schema + static reference data.
                 self.logger.info("SEED: Generating 12-Month Relational Baseline...")
                 with conn.cursor() as cur:
                     self._create_schema(cur)
@@ -591,6 +649,7 @@ class CommerceSourceDataGenerator:
                 self._pg_bulk_copy(conn, pl.DataFrame(iso), "ref_countries")
                 country_distribution = build_country_distribution()
 
+                # Step 3 (seed): create core master entities (companies/products).
                 num_sup = int(self.params.seed_total_companies * self.params.seed_supplier_ratio)
                 cos = []
                 for i in range(self.params.seed_total_companies):
@@ -625,18 +684,9 @@ class CommerceSourceDataGenerator:
                     )
                 self._pg_bulk_copy(conn, pl.DataFrame(prods), "products")
 
+                # Step 4 (seed): materialize dependent entities (catalogs/customers).
                 with conn.cursor() as cur:
-                    cur.execute("SELECT id, base_price, created_at, supplier_cuit FROM products")
-                    all_p = [
-                        {
-                            "id": row[0],
-                            "base_price": float(row[1]),
-                            "created_at": row[2],
-                            "supplier_cuit": row[3],
-                            "supplier_country_code": company_country_by_cuit.get(row[3]),
-                        }
-                        for row in cur.fetchall()
-                    ]
+                    all_p = self._fetch_products_with_supplier_country(cur, company_country_by_cuit)
                     client_cuits = [c["cuit"] for c in cos if c["type"] == "Client"]
                     cats = []
                     for cuit in client_cuits:
@@ -648,7 +698,7 @@ class CommerceSourceDataGenerator:
                                 now_ts=datetime.now(),
                             )
                         )
-                    self._pg_bulk_copy(conn, pl.DataFrame(cats), "company_catalogs")
+                    self._pg_bulk_copy_rows(conn, cats, "company_catalogs")
                     client_weights = country_sampling_weights(
                         [company_country_by_cuit.get(cuit, "") for cuit in client_cuits],
                         distribution=country_distribution,
@@ -657,17 +707,15 @@ class CommerceSourceDataGenerator:
                         client_cuits, weights=client_weights, k=self.params.seed_total_customers
                     )
                     seed_customer_count = len(customer_company_cuits)
-                    self._pg_bulk_copy(
+                    self._pg_bulk_copy_rows(
                         conn,
-                        pl.DataFrame(
-                            [
-                                self._generate_customer_data(
-                                    company_cuit=cuit,
-                                    company_country_code=company_country_by_cuit.get(cuit),
-                                )
-                                for cuit in customer_company_cuits
-                            ]
-                        ),
+                        [
+                            self._generate_customer_data(
+                                company_cuit=cuit,
+                                company_country_code=company_country_by_cuit.get(cuit),
+                            )
+                            for cuit in customer_company_cuits
+                        ],
                         "customers",
                     )
 
@@ -675,6 +723,7 @@ class CommerceSourceDataGenerator:
                     f"SEED BASELINE: +{len(cos)} Co, +{seed_customer_count} Cust, "
                     f"+{len(prods)} Prod, +{len(cats)} CatalogRows"
                 )
+                # Step 5 (seed): generate initial transactional baseline.
                 self._generate_batch(
                     conn,
                     num_orders=self.params.seed_total_orders,
@@ -688,6 +737,7 @@ class CommerceSourceDataGenerator:
                     },
                 )
             else:
+                # Step 2 (evolution): run one incremental market cycle.
                 self.logger.info("EVOLUTION: Running Dynamic Market Cycle...")
                 inc_orders = self._sample_incremental_order_volume(datetime.now())
                 self.logger.info(f"EVOLUTION: Seasonal daily order target = {inc_orders}")
