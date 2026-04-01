@@ -261,9 +261,9 @@ Recommended one-shot:
 uv run python packages/b2b_ec_sources/src/scripts/generate_all.py
 ```
 
-Geography validation:
+Source DB validation:
 ```bash
-uv run python packages/b2b_ec_sources/src/scripts/validate_geography.py
+uv run python packages/b2b_ec_sources/src/scripts/validate_source_db.py
 ```
 
 Individual commands:
