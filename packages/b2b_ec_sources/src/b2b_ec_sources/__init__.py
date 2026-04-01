@@ -23,3 +23,13 @@ def get_connection():
 @cache
 def get_iso_data():
     return [{"code": c.alpha_2, "name": getattr(c, "common_name", c.name)} for c in pycountry.countries]
+
+
+def coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "t", "yes", "y"}
+    return False

@@ -7,11 +7,13 @@ from contextlib import contextmanager
 import polars as pl
 from b2b_ec_sources import get_connection
 from b2b_ec_sources.geography import GEO
+from b2b_ec_sources.lead_gen import MLG
 from b2b_ec_utils.storage import storage
 from rich.console import Console
 from rich.table import Table
 
 console = Console()
+ALLOWED_LEAD_STATUSES = set(MLG.statuses)
 
 
 def _latest_path(pattern: str) -> str | None:
@@ -389,6 +391,21 @@ def validate_marketing_leads() -> None:
 
     with storage.open(latest, mode="rb") as f:
         leads_df = pl.read_csv(f)
+
+    if "status" in leads_df.columns:
+        status_df = leads_df.with_columns(
+            pl.col("status")
+            .cast(pl.Utf8, strict=False)
+            .fill_null("")
+            .str.strip_chars()
+            .alias("_status_norm")
+        )
+        invalid_status_count = status_df.filter(~pl.col("_status_norm").is_in(sorted(ALLOWED_LEAD_STATUSES))).height
+        status_tone = "green" if invalid_status_count == 0 else "red"
+        console.print(
+            f"Marketing leads status domain: [{status_tone}]invalid={invalid_status_count}[/{status_tone}] "
+            f"(allowed={sorted(ALLOWED_LEAD_STATUSES)})"
+        )
 
     lead_countries = leads_df.get_column("country_code").to_list()
     _print_top_country_share("Marketing leads", lead_countries)
