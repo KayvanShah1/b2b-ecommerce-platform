@@ -6,17 +6,16 @@ from datetime import datetime, timedelta
 import polars as pl
 from b2b_ec_utils import get_logger, timed_run
 from b2b_ec_utils.storage import storage
-from faker import Faker
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from b2b_ec_sources import get_connection
+from b2b_ec_sources.geography import build_country_distribution, sample_country_code, sample_ip_for_country
 from b2b_ec_sources.temporal_sampling import (
     build_month_probability_vector,
     sample_seasonal_volume,
     sample_timestamp_within_window,
 )
 
-fake = Faker()
 logger = get_logger("WebLogGenerator")
 
 
@@ -102,10 +101,15 @@ class WebLogGenerator:
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                query = "SELECT username, created_at FROM customers"
+                query = """
+                    SELECT cust.username, cust.created_at, comp.country_code
+                    FROM customers AS cust
+                    LEFT JOIN companies AS comp
+                      ON cust.company_cuit = comp.cuit
+                """
                 cur.execute(query)
                 results = cur.fetchall()
-                return [{"username": r[0], "created_at": r[1]} for r in results]
+                return [{"username": r[0], "created_at": r[1], "country_code": r[2]} for r in results]
         finally:
             conn.close()
 
@@ -150,6 +154,7 @@ class WebLogGenerator:
             seasonality_peak_month=W.SEASONALITY_PEAK_MONTH,
             month_jitter_sigma=W.MONTH_JITTER_SIGMA,
         )
+        country_distribution = build_country_distribution()
 
         users = self.get_eligible_users()
         if not users:
@@ -184,6 +189,10 @@ class WebLogGenerator:
 
             # Unauthenticated traffic share remains configurable
             username = "-" if random.random() < W.UNAUTH_TRAFFIC_RATIO else user_meta["username"]
+            if username == "-":
+                country_code = sample_country_code(country_distribution)
+            else:
+                country_code = user_meta.get("country_code") or sample_country_code(country_distribution)
 
             # Timestamp follows seasonal distribution but stays after user creation
             window_days = W.SEED_DISTRIBUTION_DAYS if is_seed else W.DAILY_DISTRIBUTION_DAYS
@@ -216,9 +225,10 @@ class WebLogGenerator:
             # Construct the JSON Record
             log_entry = {
                 "event_id": uuid.uuid4().hex,
-                "remote_host": fake.ipv4(),
+                "remote_host": sample_ip_for_country(country_code),
                 "ident": "-",
                 "username": username,
+                "country_code": country_code,
                 "timestamp": dt.isoformat(),
                 "request_method": method,
                 "request_path": path,

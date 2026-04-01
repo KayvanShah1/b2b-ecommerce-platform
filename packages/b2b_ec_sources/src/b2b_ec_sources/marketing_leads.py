@@ -8,7 +8,14 @@ from faker import Faker
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from b2b_ec_sources import get_connection, get_iso_data
+from b2b_ec_sources import get_connection
+from b2b_ec_sources.geography import (
+    build_country_distribution,
+    localized_company_name,
+    localized_full_name,
+    localized_phone,
+    sample_country_code,
+)
 from b2b_ec_sources.temporal_sampling import (
     build_month_probability_vector,
     sample_seasonal_volume,
@@ -55,7 +62,6 @@ class MarketingLeadsParameters(BaseSettings):
     max_daily_volume_factor: float = Field(default=1.40, ge=0.0)
 
     carryover_ratio: float = Field(default=0.35, ge=0.0, le=1.0)
-    fallback_iso_codes: list[str] = ["US", "IN", "QA", "AE", "GB", "DE"]
 
     model_config = SettingsConfigDict(env_prefix="MARKETING_LEADS_", extra="ignore")
 
@@ -79,20 +85,13 @@ class MarketingLeadsGenerator:
         self.sources = params.sources
         self.statuses = params.statuses
 
-        # Pull real ISO codes to ensure CSV joins perfectly with Postgres ref_countries
-        try:
-            self.iso_codes = [c["code"] for c in get_iso_data()]
-        except Exception:
-            # Fallback if DB is not initialized
-            self.iso_codes = params.fallback_iso_codes
-
     def get_existing_companies(self):
-        """Fetch existing company names to simulate 'Existing Client' leads."""
+        """Fetch existing client companies and countries for aligned lead geography."""
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT name FROM companies WHERE type = 'Client' LIMIT 500")
-                return [r[0] for r in cur.fetchall()]
+                cur.execute("SELECT name, country_code FROM companies WHERE type = 'Client' LIMIT 500")
+                return [{"name": r[0], "country_code": r[1]} for r in cur.fetchall()]
         except Exception as e:
             logger.warning(f"Could not fetch companies from DB: {e}. Using random names.")
             return []
@@ -184,6 +183,7 @@ class MarketingLeadsGenerator:
             seasonality_peak_month=self.params.seasonality_peak_month,
             month_jitter_sigma=self.params.month_jitter_sigma,
         )
+        country_distribution = build_country_distribution()
 
         existing_companies = self.get_existing_companies()
         prev_count = 0 if prev_df is None else prev_df.height
@@ -215,17 +215,19 @@ class MarketingLeadsGenerator:
                     {
                         "lead_id": row.get("lead_id", fake.uuid4()),
                         "created_at": created_at,
-                        "company_name": row.get("company_name", fake.company()),
+                        "company_name": row.get(
+                            "company_name", localized_company_name(row.get("country_code"))
+                        ),
                         "is_prospect": row.get("is_prospect", False),
                         "industry": row.get("industry", fake.bs().capitalize()),
-                        "contact_name": row.get("contact_name", fake.name()),
+                        "contact_name": row.get("contact_name", localized_full_name(row.get("country_code"))),
                         "contact_email": row.get("contact_email", fake.unique.company_email()),
-                        "contact_phone": row.get("contact_phone", fake.phone_number()),
+                        "contact_phone": row.get("contact_phone", localized_phone(row.get("country_code"))),
                         "lead_source": row.get("lead_source", random.choice(self.sources)),
                         "estimated_annual_revenue": float(
                             row.get("estimated_annual_revenue", random.randint(50000, 1000000))
                         ),
-                        "country_code": row.get("country_code", random.choice(self.iso_codes)),
+                        "country_code": row.get("country_code", sample_country_code(country_distribution)),
                         "status": new_status,
                         "status_updated_at": status_updated_at,
                         "last_activity_at": last_activity_at,
@@ -237,11 +239,14 @@ class MarketingLeadsGenerator:
         for _ in range(new_count):
             use_existing_company = bool(existing_companies) and random.random() < self.params.existing_company_ratio
             if use_existing_company:
-                company_name = random.choice(existing_companies)
+                company_meta = random.choice(existing_companies)
+                country_code = company_meta.get("country_code") or sample_country_code(country_distribution)
+                company_name = company_meta.get("name") or localized_company_name(country_code)
                 is_prospect = False
             else:
                 # New B2B prospect
-                company_name = fake.company()
+                country_code = sample_country_code(country_distribution)
+                company_name = localized_company_name(country_code)
                 is_prospect = True
 
             created_at_dt = self._random_created_at(is_seed=is_seed, now_ts=now_ts, month_probs=month_probs)
@@ -257,12 +262,12 @@ class MarketingLeadsGenerator:
                     "company_name": company_name,
                     "is_prospect": is_prospect,
                     "industry": fake.bs().capitalize(),  # Generates professional sounding industries/niches
-                    "contact_name": fake.name(),
+                    "contact_name": localized_full_name(country_code),
                     "contact_email": fake.unique.company_email(),
-                    "contact_phone": fake.phone_number(),  # Matches 'TEXT' type in Postgres
+                    "contact_phone": localized_phone(country_code),  # Matches 'TEXT' type in Postgres
                     "lead_source": random.choice(self.sources),
                     "estimated_annual_revenue": float(random.randint(50000, 1000000)),  # B2B scale
-                    "country_code": random.choice(self.iso_codes),
+                    "country_code": country_code,
                     "status": status,
                     "status_updated_at": status_updated_at,
                     "last_activity_at": last_activity_at,

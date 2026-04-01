@@ -83,6 +83,7 @@ Default buckets:
 Generator tuning (env prefixes):
 1. Marketing leads: `MARKETING_LEADS_*`
 2. Webserver logs: `WEB_LOGS_*`
+3. Geography and trade realism: `GEO_*`
 
 ### MinIO Quick Setup
 
@@ -161,6 +162,18 @@ If the schema exists, each run simulates a "market day":
 5. New orders and order items are generated from current state.
 6. Daily order volume is seasonally sampled (default range target: 100-450).
 
+### Geography and Trade Realism
+
+The relational generator now uses a statistically modeled geography strategy:
+1. Company country assignment is weighted: about 80 percent in top economies and 20 percent in the rest.
+2. Controlled noise is applied to shares and weights each run (bounded jitter, then renormalization).
+3. Catalog construction uses trade lanes, not flat random links:
+4. Domestic lane (default 50 percent)
+5. Regional lane (default 30 percent)
+6. Global lane (default 20 percent)
+
+This keeps country concentration realistic while preserving import/export style product flow.
+
 ```mermaid
 flowchart TD
   E0[Start Evolution Run] --> E1[New companies + price shifts]
@@ -184,8 +197,10 @@ Key behavior:
 1. By default, about 70 percent of new leads map to existing client companies (when available).
 2. Seed mode creates a historical baseline; daily mode carries over a subset of prior leads and advances statuses.
 3. Lead sources and statuses simulate a realistic B2B funnel.
-4. Country codes align with Postgres `ref_countries` for clean joins.
-5. Lead timestamps and daily lead volume follow monthly seasonality plus jitter.
+4. Existing-company leads inherit the company country; new prospects use weighted geography sampling.
+5. Contact names and phone numbers are localized from country-to-locale mapping.
+6. Country codes align with Postgres `ref_countries` for clean joins.
+7. Lead timestamps and daily lead volume follow monthly seasonality plus jitter.
 
 ```mermaid
 flowchart LR
@@ -225,7 +240,8 @@ Log semantics:
 2. About 10 percent of traffic is unauthenticated.
 3. Authenticated traffic is biased toward returning users while still sampling recent new users.
 4. Endpoints and status codes are weighted for realistic production traffic.
-5. Timestamps always occur after the corresponding customer account creation time.
+5. IP addresses are country-aware: authenticated traffic follows customer country; unauthenticated traffic follows weighted country sampling.
+6. Timestamps always occur after the corresponding customer account creation time.
 
 ```mermaid
 flowchart LR
@@ -243,6 +259,11 @@ Storage location:
 Recommended one-shot:
 ```bash
 uv run python packages/b2b_ec_sources/src/scripts/generate_all.py
+```
+
+Geography validation:
+```bash
+uv run python packages/b2b_ec_sources/src/scripts/validate_geography.py
 ```
 
 Individual commands:
