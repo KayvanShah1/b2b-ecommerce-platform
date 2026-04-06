@@ -52,17 +52,18 @@ def _read_marketing_csv(path: str, run_id: str, run_ts: datetime) -> pl.DataFram
 
 def _iter_web_logs_jsonl_chunks(path: str, run_id: str, run_ts: datetime):
     rows: list[dict[str, Any]] = []
+    bad_lines = 0
 
-    def _append_parsed(raw_line: bytes, line_idx: int) -> None:
+    def _append_parsed(raw_line: bytes, line_idx: int) -> bool:
         nonlocal rows
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line:
-            return
+            return True
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
             logger.warning(f"Skipping invalid JSONL row: file={path} line={line_idx}")
-            return
+            return False
 
         rows.append(
             {
@@ -79,6 +80,7 @@ def _iter_web_logs_jsonl_chunks(path: str, run_id: str, run_ts: datetime):
                 "_ingested_at": run_ts.isoformat(),
             }
         )
+        return True
 
     pending = b""
     line_idx = -1
@@ -93,17 +95,20 @@ def _iter_web_logs_jsonl_chunks(path: str, run_id: str, run_ts: datetime):
 
             for raw_line in lines:
                 line_idx += 1
-                _append_parsed(raw_line, line_idx)
+                if not _append_parsed(raw_line, line_idx):
+                    bad_lines += 1
                 if len(rows) >= WEB_LOGS_CHUNK_SIZE:
-                    yield pl.DataFrame(rows)
+                    yield pl.DataFrame(rows), bad_lines
                     rows = []
+                    bad_lines = 0
 
         if pending:
             line_idx += 1
-            _append_parsed(pending, line_idx)
+            if not _append_parsed(pending, line_idx):
+                bad_lines += 1
 
-    if rows:
-        yield pl.DataFrame(rows)
+    if rows or bad_lines:
+        yield (pl.DataFrame(rows) if rows else pl.DataFrame()), bad_lines
 
 
 def _resolve_patterns(spec: RawFileCaptureSpec) -> list[str]:
@@ -175,7 +180,7 @@ def _capture_marketing_files(
     run_id: str,
     run_ts: datetime,
     source_files: list[str],
-) -> tuple[list[str], int, list[dict[str, Any]]]:
+) -> tuple[list[str], int, list[dict[str, Any]], int]:
     output_paths: list[str] = []
     total_rows = 0
     columns: list[dict[str, Any]] = []
@@ -196,7 +201,7 @@ def _capture_marketing_files(
             columns = _schema_columns(frame)
         run_ctx.checkpoint("last_file", source_file)
 
-    return output_paths, total_rows, columns
+    return output_paths, total_rows, columns, 0
 
 
 def _capture_web_logs_files(
@@ -205,14 +210,16 @@ def _capture_web_logs_files(
     run_id: str,
     run_ts: datetime,
     source_files: list[str],
-) -> tuple[list[str], int, list[dict[str, Any]]]:
+) -> tuple[list[str], int, list[dict[str, Any]], int]:
     output_paths: list[str] = []
     total_rows = 0
+    total_bad_lines = 0
     columns: list[dict[str, Any]] = []
 
     for source_file in source_files:
         chunk_index = 0
-        for frame in _iter_web_logs_jsonl_chunks(source_file, run_id, run_ts):
+        for frame, bad_lines in _iter_web_logs_jsonl_chunks(source_file, run_id, run_ts):
+            total_bad_lines += bad_lines
             if frame.is_empty():
                 continue
 
@@ -232,10 +239,10 @@ def _capture_web_logs_files(
             )
             chunk_index += 1
 
-    return output_paths, total_rows, columns
+    return output_paths, total_rows, columns, total_bad_lines
 
 
-CAPTURE_HANDLERS: dict[str, Callable[..., tuple[list[str], int, list[dict[str, Any]]]]] = {
+CAPTURE_HANDLERS: dict[str, Callable[..., tuple[list[str], int, list[dict[str, Any]], int]]] = {
     "marketing_csv": _capture_marketing_files,
     "web_logs_jsonl": _capture_web_logs_files,
 }
@@ -265,7 +272,7 @@ def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime)
             f"new={len(new_files)} skipped={skipped_count} wm_before_ts={previous_ts} wm_before_file={previous_file}"
         )
 
-        output_paths, total_rows, schema_columns = handler(spec, run_ctx, run_id, run_ts, new_files)
+        output_paths, total_rows, schema_columns, bad_lines = handler(spec, run_ctx, run_id, run_ts, new_files)
         watermark_after = {
             "source": spec.source,
             "dataset": spec.dataset,
@@ -280,6 +287,8 @@ def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime)
 
         completed_manifest = run_ctx.complete(
             record_count=total_rows,
+            bad_record_count=bad_lines,
+            bad_line_count=bad_lines,
             processed_files=new_files,
             raw_paths=output_paths,
             watermark_before=run_ctx.watermark_before,
@@ -291,6 +300,7 @@ def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime)
 
         logger.info(
             f"FILE RAW: source={spec.source} files={len(new_files)} rows={total_rows} "
+            f"bad_lines={bad_lines} "
             f"wm_before_ts={previous_ts} wm_after_ts={watermark_after['value']} "
             f"wm_after_file={watermark_after['last_file']}"
         )

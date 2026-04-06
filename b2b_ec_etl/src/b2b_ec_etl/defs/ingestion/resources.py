@@ -20,7 +20,7 @@ from b2b_ec_etl.defs.ingestion.core import (
     process_web_logs_to_processed,
 )
 from b2b_ec_etl.defs.ingestion.core.models import Watermark
-from b2b_ec_etl.defs.ingestion.core.state import state_manager
+from b2b_ec_etl.defs.ingestion.core.state import state_manager, state_resolver
 
 logger = get_logger("IngestionResource")
 
@@ -47,6 +47,7 @@ class IngestionResource(ConfigurableResource):
             "status": "failed",
             "record_count": 0,
             "bad_record_count": 0,
+            "bad_line_count": 0,
             "raw_paths": [],
             "processed_paths": [],
             "processed_files": [],
@@ -64,7 +65,7 @@ class IngestionResource(ConfigurableResource):
         exc: Exception,
     ) -> dict[str, Any]:
         logger.exception(f"{stage.upper()} FAILED: source={source} dataset={dataset} run_id={run_id}: {exc}")
-        persisted = state_manager.get_run_manifest(run_id=run_id, source=source, dataset=dataset)
+        persisted = state_manager.get_run_manifest(run_id=run_id, source=source, dataset=dataset, stage=stage)
         if persisted is not None:
             return persisted.model_dump(mode="json")
         return self._failed_manifest(
@@ -83,15 +84,8 @@ class IngestionResource(ConfigurableResource):
             state_manager.put_watermark(Watermark.model_validate(watermark_payload))
 
     def _latest_manifest_for_stage(self, source: str, dataset: str, stage: str) -> dict[str, Any] | None:
-        watermark = state_manager.get_watermark(source=source, dataset=dataset, stage=stage)
-        if not watermark or not watermark.run_id:
-            return None
-        manifest = state_manager.get_run_manifest(run_id=watermark.run_id, source=source, dataset=dataset)
-        if not manifest:
-            return None
-        if str(manifest.stage) != stage or manifest.status != "completed":
-            return None
-        return manifest.model_dump(mode="json")
+        manifest = state_resolver.latest_completed_manifest(source=source, dataset=dataset, stage=stage)
+        return manifest.model_dump(mode="json") if manifest else None
 
     def _resolve_raw_result(self, raw_result: dict[str, Any] | None) -> dict[str, Any]:
         if raw_result is not None:
