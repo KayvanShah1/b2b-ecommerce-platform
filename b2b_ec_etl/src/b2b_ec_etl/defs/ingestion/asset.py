@@ -3,12 +3,25 @@ from datetime import datetime, timezone
 from dagster import AssetExecutionContext, MaterializeResult, asset
 
 
+def _manifest_list(payload: list[dict] | dict[str, dict]) -> list[dict]:
+    return payload if isinstance(payload, list) else list(payload.values())
+
+
+def _manifest_metrics(payload: list[dict] | dict[str, dict]) -> dict[str, int]:
+    manifests = _manifest_list(payload)
+    return {
+        "datasets": len(manifests),
+        "records": sum(int(m.get("record_count", 0)) for m in manifests),
+        "bad_records": sum(int(m.get("bad_record_count", 0)) for m in manifests),
+    }
+
+
 @asset(group_name="raw_data_capture", required_resource_keys={"ingestion_resource"}, kinds=["python", "postgres"])
 def raw_capture_postgres(context: AssetExecutionContext) -> list[dict]:
     run_ts = datetime.now(timezone.utc)
     manifests = context.resources.ingestion_resource.raw_capture_postgres(run_id=context.run_id, run_ts=run_ts)
-    total_rows = sum(m["record_count"] for m in manifests)
-    context.add_output_metadata({"datasets": len(manifests), "records": total_rows})
+    metrics = _manifest_metrics(manifests)
+    context.add_output_metadata({"datasets": metrics["datasets"], "records": metrics["records"]})
     return manifests
 
 
@@ -16,8 +29,14 @@ def raw_capture_postgres(context: AssetExecutionContext) -> list[dict]:
 def raw_capture_files(context: AssetExecutionContext) -> dict:
     run_ts = datetime.now(timezone.utc)
     manifests = context.resources.ingestion_resource.raw_capture_files(run_id=context.run_id, run_ts=run_ts)
-    total_rows = manifests["marketing_leads"]["record_count"] + manifests["webserver_logs"]["record_count"]
-    context.add_output_metadata({"datasets": 2, "records": total_rows})
+    metrics = _manifest_metrics(manifests)
+    context.add_output_metadata(
+        {
+            "datasets": metrics["datasets"],
+            "records": metrics["records"],
+            "bad_records": metrics["bad_records"],
+        }
+    )
     return manifests
 
 
@@ -37,10 +56,13 @@ def process_postgres(
         run_ts=run_ts,
         raw_manifests=raw_capture_postgres,
     )
-    total_rows = sum(m["record_count"] for m in manifests)
-    total_bad_rows = sum(m.get("bad_record_count", 0) for m in manifests)
+    metrics = _manifest_metrics(manifests)
     context.add_output_metadata(
-        {"datasets": len(manifests), "processed_records": total_rows, "bad_records": total_bad_rows}
+        {
+            "datasets": metrics["datasets"],
+            "processed_records": metrics["records"],
+            "bad_records": metrics["bad_records"],
+        }
     )
     return manifests
 
@@ -61,10 +83,13 @@ def process_files(
         run_ts=run_ts,
         raw_file_manifests=raw_capture_files,
     )
-    total_rows = sum(m["record_count"] for m in manifests.values())
-    total_bad_rows = sum(m.get("bad_record_count", 0) for m in manifests.values())
+    metrics = _manifest_metrics(manifests)
     context.add_output_metadata(
-        {"datasets": len(manifests), "processed_records": total_rows, "bad_records": total_bad_rows}
+        {
+            "datasets": metrics["datasets"],
+            "processed_records": metrics["records"],
+            "bad_records": metrics["bad_records"],
+        }
     )
     return manifests
 

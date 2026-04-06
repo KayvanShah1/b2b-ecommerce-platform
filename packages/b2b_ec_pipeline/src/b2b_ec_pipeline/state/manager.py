@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from threading import Lock
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from psycopg2 import sql
 from psycopg2.extras import Json
@@ -585,6 +585,7 @@ def managed_ingestion_run(
     stage: str,
     processed_files: list[str] | None = None,
     auto_complete: bool = False,
+    failure_context: Callable[[], dict[str, Any]] | None = None,
 ) -> Iterator[IngestionRunContext]:
     run_ctx = state_manager.open_run(
         run_id=run_id,
@@ -600,7 +601,9 @@ def managed_ingestion_run(
             run_ctx.complete(watermark_before=run_ctx.watermark_before)
             run_ctx.checkpoint("status", "completed")
     except Exception as exc:
-        run_ctx.fail(error_message=str(exc), watermark_before=run_ctx.watermark_before)
+        fail_kwargs = failure_context() if failure_context else {}
+        fail_kwargs.setdefault("watermark_before", run_ctx.watermark_before)
+        run_ctx.fail(error_message=str(exc), **fail_kwargs)
         run_ctx.checkpoint("status", "failed")
         raise
 

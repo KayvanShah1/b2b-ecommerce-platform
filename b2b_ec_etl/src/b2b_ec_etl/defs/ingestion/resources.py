@@ -11,15 +11,13 @@ from pydantic import Field
 from b2b_ec_etl.defs.ingestion.core import (
     POSTGRES_TABLE_CONFIGS,
     extract_postgres_table_to_raw,
-    ingest_marketing_leads_to_raw,
-    ingest_web_logs_to_raw,
+    ingest_file_source_to_raw,
     load_file_manifests_to_staging,
     load_postgres_manifests_to_staging,
-    process_marketing_to_processed,
+    process_file_dataset_to_processed,
     process_postgres_dataset_to_processed,
-    process_web_logs_to_processed,
 )
-from b2b_ec_etl.defs.ingestion.core.models import Watermark
+from b2b_ec_etl.defs.ingestion.core.models import FILE_PROCESS_SPECS, FILE_RAW_CAPTURE_SPECS, Watermark
 from b2b_ec_etl.defs.ingestion.core.state import state_manager, state_resolver
 
 logger = get_logger("IngestionResource")
@@ -47,7 +45,6 @@ class IngestionResource(ConfigurableResource):
             "status": "failed",
             "record_count": 0,
             "bad_record_count": 0,
-            "bad_line_count": 0,
             "raw_paths": [],
             "processed_paths": [],
             "processed_files": [],
@@ -98,10 +95,10 @@ class IngestionResource(ConfigurableResource):
                 postgres_manifests.append(manifest)
 
         file_manifests: dict[str, dict[str, Any]] = {}
-        for source_name, dataset in [("marketing_leads", "marketing_leads"), ("webserver_logs", "webserver_logs")]:
-            manifest = self._latest_manifest_for_stage(source=source_name, dataset=dataset, stage="raw_capture")
+        for dataset_key, spec in FILE_RAW_CAPTURE_SPECS.items():
+            manifest = self._latest_manifest_for_stage(source=spec.source, dataset=spec.dataset, stage="raw_capture")
             if manifest:
-                file_manifests[source_name] = manifest
+                file_manifests[dataset_key] = manifest
 
         return {"postgres": postgres_manifests, "files": file_manifests}
 
@@ -128,17 +125,17 @@ class IngestionResource(ConfigurableResource):
 
         if file_manifests is None:
             file_manifests = {}
-            for source_name, dataset in [("marketing_leads", "marketing_leads"), ("webserver_logs", "webserver_logs")]:
-                manifest = self._latest_manifest_for_stage(source=source_name, dataset=dataset, stage="process")
+            for dataset_key, spec in FILE_PROCESS_SPECS.items():
+                manifest = self._latest_manifest_for_stage(source=spec.source, dataset=spec.dataset, stage="process")
                 if manifest:
-                    file_manifests[source_name] = manifest
+                    file_manifests[dataset_key] = manifest
                     logger.info(
-                        f"LOAD RESOLVE: source={source_name} dataset={dataset} "
+                        f"LOAD RESOLVE: source={spec.source} dataset={spec.dataset} "
                         f"manifest_run_id={manifest.get('run_id')} status={manifest.get('status')}"
                     )
                 else:
                     logger.warning(
-                        f"LOAD RESOLVE: source={source_name} dataset={dataset} no completed process manifest"
+                        f"LOAD RESOLVE: source={spec.source} dataset={spec.dataset} no completed process manifest"
                     )
 
         return postgres_manifests, file_manifests
@@ -183,35 +180,22 @@ class IngestionResource(ConfigurableResource):
         run_ts: datetime,
         commit_watermarks: bool = True,
     ) -> dict[str, dict[str, Any]]:
-        try:
-            marketing_manifest = ingest_marketing_leads_to_raw(run_id=run_id, run_ts=run_ts)
-        except Exception as exc:
-            marketing_manifest = self._handle_step_exception(
-                stage="raw_capture",
-                source="marketing_leads",
-                dataset="marketing_leads",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
+        manifests: dict[str, dict[str, Any]] = {}
+        for dataset_key, spec in FILE_RAW_CAPTURE_SPECS.items():
+            try:
+                manifests[dataset_key] = ingest_file_source_to_raw(dataset_key=dataset_key, run_id=run_id, run_ts=run_ts)
+            except Exception as exc:
+                manifests[dataset_key] = self._handle_step_exception(
+                    stage="raw_capture",
+                    source=spec.source,
+                    dataset=spec.dataset,
+                    run_id=run_id,
+                    run_ts=run_ts,
+                    exc=exc,
+                )
+                if self.fail_fast:
+                    raise
 
-        try:
-            web_logs_manifest = ingest_web_logs_to_raw(run_id=run_id, run_ts=run_ts)
-        except Exception as exc:
-            web_logs_manifest = self._handle_step_exception(
-                stage="raw_capture",
-                source="webserver_logs",
-                dataset="webserver_logs",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
-
-        manifests = {"marketing_leads": marketing_manifest, "webserver_logs": web_logs_manifest}
         if commit_watermarks:
             self._commit_stage_watermarks(list(manifests.values()))
         return manifests
@@ -275,42 +259,28 @@ class IngestionResource(ConfigurableResource):
         commit_watermarks: bool = True,
     ) -> dict[str, dict[str, Any]]:
         raw_file_manifests = raw_file_manifests or {}
-        try:
-            marketing_manifest = process_marketing_to_processed(
-                run_id=run_id,
-                run_ts=run_ts,
-                hint_raw_paths=(raw_file_manifests.get("marketing_leads") or {}).get("raw_paths", []),
-            )
-        except Exception as exc:
-            marketing_manifest = self._handle_step_exception(
-                stage="process",
-                source="marketing_leads",
-                dataset="marketing_leads",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
+        manifests: dict[str, dict[str, Any]] = {}
+        for dataset_key, spec in FILE_PROCESS_SPECS.items():
+            hint_raw_paths = (raw_file_manifests.get(dataset_key) or {}).get("raw_paths", [])
+            try:
+                manifests[dataset_key] = process_file_dataset_to_processed(
+                    dataset_key=dataset_key,
+                    run_id=run_id,
+                    run_ts=run_ts,
+                    hint_raw_paths=hint_raw_paths,
+                )
+            except Exception as exc:
+                manifests[dataset_key] = self._handle_step_exception(
+                    stage="process",
+                    source=spec.source,
+                    dataset=spec.dataset,
+                    run_id=run_id,
+                    run_ts=run_ts,
+                    exc=exc,
+                )
+                if self.fail_fast:
+                    raise
 
-        try:
-            web_logs_manifest = process_web_logs_to_processed(
-                run_id=run_id,
-                run_ts=run_ts,
-                hint_raw_paths=(raw_file_manifests.get("webserver_logs") or {}).get("raw_paths", []),
-            )
-        except Exception as exc:
-            web_logs_manifest = self._handle_step_exception(
-                stage="process",
-                source="webserver_logs",
-                dataset="webserver_logs",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
-        manifests = {"marketing_leads": marketing_manifest, "webserver_logs": web_logs_manifest}
         if commit_watermarks:
             self._commit_stage_watermarks(list(manifests.values()))
         return manifests
@@ -372,8 +342,7 @@ class IngestionResource(ConfigurableResource):
             conn,
             run_id=run_id,
             run_ts=run_ts,
-            marketing_manifest=file_manifests.get("marketing_leads"),
-            web_logs_manifest=file_manifests.get("webserver_logs"),
+            file_manifests=file_manifests,
         )
 
         if commit_watermarks:

@@ -49,7 +49,6 @@ class RunManifest(IngestionModel):
     raw_paths: list[str] = Field(default_factory=list)
     processed_paths: list[str] = Field(default_factory=list)
     bad_record_count: int = 0
-    bad_line_count: int = 0
     watermark_before: dict[str, Any] = Field(default_factory=dict)
     watermark_after: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None
