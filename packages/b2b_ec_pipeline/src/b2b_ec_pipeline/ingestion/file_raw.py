@@ -11,7 +11,7 @@ from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_pipeline.ingestion.io import write_parquet_frame
 from b2b_ec_pipeline.ingestion.models import FILE_RAW_CAPTURE_SPECS, RawFileCaptureSpec
-from b2b_ec_pipeline.state import IngestionRunContext, managed_ingestion_run, state_manager
+from b2b_ec_pipeline.state import IngestionRunContext, RunManifest, managed_ingestion_run, state_manager
 
 logger = get_logger("FileRawIngestion")
 WEB_LOGS_CHUNK_SIZE = 50_000
@@ -37,7 +37,6 @@ PATTERN_RESOLVERS: dict[str, Callable[[], str]] = {
 }
 
 SOURCE_FILE_TS_PATTERN = re.compile(r"(\d{8}_\d{6})")
-FILE_DATASET_KEYS: tuple[str, ...] = tuple(FILE_RAW_CAPTURE_SPECS.keys())
 
 
 def _read_marketing_csv(path: str, run_id: str, run_ts: datetime) -> pl.DataFrame:
@@ -131,9 +130,6 @@ def _source_sort_key(path: str) -> tuple[str, str]:
 def _normalize_cursor(value: str | None, last_file: str | None) -> tuple[str | None, str | None]:
     if value and SOURCE_FILE_TS_PATTERN.fullmatch(value):
         return value, last_file
-    # If older watermark stored a file path in `value`, treat it as last_file.
-    if value and "/" in value and not last_file:
-        return _source_file_ts(value), value
     return None, last_file
 
 
@@ -249,7 +245,7 @@ CAPTURE_HANDLERS: dict[str, Callable[..., tuple[list[str], int, list[dict[str, A
 }
 
 
-def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime) -> dict[str, Any]:
+def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime) -> RunManifest:
     with managed_ingestion_run(
         state_manager=state_manager,
         run_id=run_id,
@@ -313,15 +309,5 @@ def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime)
 
 
 @timed_run
-def ingest_file_source_to_raw(dataset_key: str, run_id: str, run_ts: datetime) -> dict[str, Any]:
+def ingest_file_source_to_raw(dataset_key: str, run_id: str, run_ts: datetime) -> RunManifest:
     return _ingest_file_source(FILE_RAW_CAPTURE_SPECS[dataset_key], run_id, run_ts)
-
-
-@timed_run
-def ingest_marketing_leads_to_raw(run_id: str, run_ts: datetime) -> dict[str, Any]:
-    return ingest_file_source_to_raw("marketing_leads", run_id, run_ts)
-
-
-@timed_run
-def ingest_web_logs_to_raw(run_id: str, run_ts: datetime) -> dict[str, Any]:
-    return ingest_file_source_to_raw("webserver_logs", run_id, run_ts)

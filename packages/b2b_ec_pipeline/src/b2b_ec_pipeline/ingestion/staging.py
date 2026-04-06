@@ -9,12 +9,14 @@ from b2b_ec_utils.storage import storage
 from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_pipeline.ingestion.models import (
+    FileLoadResult,
     FILE_LOAD_SPECS,
     LoadDatasetSpec,
     LoadTargetSpec,
+    PostgresLoadResult,
     PostgresTableConfig,
 )
-from b2b_ec_pipeline.state import managed_ingestion_run, state_manager
+from b2b_ec_pipeline.state import RunManifest, managed_ingestion_run, state_manager
 
 logger = get_logger("StagingLoad")
 
@@ -84,7 +86,7 @@ def _load_dataset(
     run_id: str,
     run_ts: datetime,
     hinted_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> RunManifest:
     processed_paths = _resolve_paths(hinted_paths)
     logger.info(
         f"STAGING INPUT: source={spec.source} dataset={spec.dataset} input_files={len(processed_paths)} "
@@ -166,6 +168,21 @@ def _load_dataset(
         return completed_manifest
 
 
+def _failed_manifest(spec: LoadDatasetSpec, run_id: str, run_ts: datetime, error_message: str) -> RunManifest:
+    return RunManifest(
+        source=spec.source,
+        dataset=spec.dataset,
+        stage="load",
+        run_id=run_id,
+        run_ts=run_ts,
+        status="failed",
+        record_count=0,
+        bad_record_count=0,
+        processed_paths=[],
+        error_message=error_message,
+    )
+
+
 def _postgres_load_spec(table_cfg: PostgresTableConfig) -> LoadDatasetSpec:
     return LoadDatasetSpec(
         source="postgres",
@@ -187,10 +204,10 @@ def load_postgres_manifests_to_staging(
     table_configs: tuple[PostgresTableConfig, ...],
     run_id: str,
     run_ts: datetime,
-    manifests: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    hinted_paths_by_dataset = {manifest["dataset"]: manifest.get("processed_paths", []) for manifest in manifests or []}
-    load_manifests: list[dict[str, Any]] = []
+    manifests: list[RunManifest] | None = None,
+) -> PostgresLoadResult:
+    hinted_paths_by_dataset = {manifest.dataset: manifest.processed_paths for manifest in manifests or []}
+    load_manifests: list[RunManifest] = []
     loaded_rows = 0
     loaded_tables: list[str] = []
 
@@ -205,25 +222,13 @@ def load_postgres_manifests_to_staging(
                 hinted_paths=hinted_paths_by_dataset.get(table_cfg.name),
             )
             load_manifests.append(manifest)
-            loaded_rows += int(manifest.get("record_count", 0))
+            loaded_rows += manifest.record_count
             loaded_tables.extend([target.table for target in spec.targets])
         except Exception as exc:
             logger.exception(f"STAGING LOAD FAILED: source=postgres dataset={table_cfg.name} run_id={run_id}: {exc}")
-            load_manifests.append(
-                {
-                    "source": "postgres",
-                    "dataset": table_cfg.name,
-                    "run_id": run_id,
-                    "run_ts": run_ts.isoformat(),
-                    "status": "failed",
-                    "record_count": 0,
-                    "bad_record_count": 0,
-                    "processed_paths": [],
-                    "error_message": str(exc),
-                }
-            )
+            load_manifests.append(_failed_manifest(spec, run_id=run_id, run_ts=run_ts, error_message=str(exc)))
 
-    return {"manifests": load_manifests, "loaded_rows": loaded_rows, "loaded_tables": loaded_tables}
+    return PostgresLoadResult(manifests=load_manifests, loaded_rows=loaded_rows, loaded_tables=loaded_tables)
 
 
 @timed_run
@@ -231,11 +236,11 @@ def load_file_manifests_to_staging(
     conn,
     run_id: str,
     run_ts: datetime,
-    file_manifests: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+    file_manifests: dict[str, RunManifest] | None = None,
+) -> FileLoadResult:
     file_manifests = file_manifests or {}
-    hints = {dataset_key: (manifest or {}).get("processed_paths", []) for dataset_key, manifest in file_manifests.items()}
-    manifests: dict[str, dict[str, Any]] = {}
+    hints = {dataset_key: manifest.processed_paths for dataset_key, manifest in file_manifests.items()}
+    manifests: dict[str, RunManifest] = {}
     loaded_rows = 0
     loaded_tables: list[str] = []
 
@@ -250,22 +255,12 @@ def load_file_manifests_to_staging(
                 hinted_paths=hinted_paths,
             )
             manifests[dataset_key] = manifest
-            loaded_rows += int(manifest.get("record_count", 0))
+            loaded_rows += manifest.record_count
             loaded_tables.extend([target.table for target in spec.targets])
         except Exception as exc:
             logger.exception(
                 f"STAGING LOAD FAILED: source={spec.source} dataset={spec.dataset} run_id={run_id}: {exc}"
             )
-            manifests[dataset_key] = {
-                "source": spec.source,
-                "dataset": spec.dataset,
-                "run_id": run_id,
-                "run_ts": run_ts.isoformat(),
-                "status": "failed",
-                "record_count": 0,
-                "bad_record_count": 0,
-                "processed_paths": [],
-                "error_message": str(exc),
-            }
+            manifests[dataset_key] = _failed_manifest(spec, run_id=run_id, run_ts=run_ts, error_message=str(exc))
 
-    return {"manifests": manifests, "loaded_rows": loaded_rows, "loaded_tables": loaded_tables}
+    return FileLoadResult(manifests=manifests, loaded_rows=loaded_rows, loaded_tables=loaded_tables)

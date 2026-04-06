@@ -10,7 +10,7 @@ from b2b_ec_utils.timer import timed_run
 
 from b2b_ec_pipeline.ingestion.io import write_parquet_frame
 from b2b_ec_pipeline.ingestion.models import PostgresTableConfig
-from b2b_ec_pipeline.state import IngestionRunContext, managed_ingestion_run, state_manager
+from b2b_ec_pipeline.state import IngestionRunContext, RunManifest, managed_ingestion_run, state_manager
 
 logger = get_logger("PostgresRawIngestion")
 FETCH_BATCH_SIZE = 50_000
@@ -127,7 +127,7 @@ def _write_cursor_chunks(
 
 
 @timed_run
-def extract_postgres_table_to_raw(table_cfg: PostgresTableConfig, run_id: str, run_ts: datetime) -> dict[str, Any]:
+def extract_postgres_table_to_raw(table_cfg: PostgresTableConfig, run_id: str, run_ts: datetime) -> RunManifest:
     raw_paths: list[str] = []
     row_count = 0
     schema_columns: list[dict[str, Any]] = []

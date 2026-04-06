@@ -15,11 +15,10 @@ from b2b_ec_pipeline.ingestion.models import (
     ProcessDatasetSpec,
     PostgresTableConfig,
 )
-from b2b_ec_pipeline.state import managed_ingestion_run, state_manager
+from b2b_ec_pipeline.state import RunManifest, managed_ingestion_run, state_manager
 
 logger = get_logger("ProcessIngestion")
 PROCESS_WRITE_CHUNK_SIZE = 50_000
-FILE_PROCESS_DATASET_KEYS: tuple[str, ...] = tuple(FILE_PROCESS_SPECS.keys())
 
 
 def _read_parquet(path: str) -> pl.DataFrame:
@@ -158,7 +157,7 @@ def _process_dataset(
     run_id: str,
     run_ts: datetime,
     hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> RunManifest:
     source = spec.source
     dataset = spec.dataset
     model_cls = POSTGRES_TABLE_SCHEMAS.get(spec.model_key) or FILE_SOURCE_SCHEMAS[spec.model_key]
@@ -279,7 +278,7 @@ def process_postgres_dataset_to_processed(
     run_id: str,
     run_ts: datetime,
     hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> RunManifest:
     spec = ProcessDatasetSpec(
         source="postgres",
         dataset=table_cfg.name,
@@ -301,28 +300,10 @@ def process_file_dataset_to_processed(
     run_id: str,
     run_ts: datetime,
     hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> RunManifest:
     return _process_dataset(
         spec=FILE_PROCESS_SPECS[dataset_key],
         run_id=run_id,
         run_ts=run_ts,
         hint_raw_paths=hint_raw_paths,
     )
-
-
-@timed_run
-def process_marketing_to_processed(
-    run_id: str,
-    run_ts: datetime,
-    hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
-    return process_file_dataset_to_processed("marketing_leads", run_id, run_ts, hint_raw_paths=hint_raw_paths)
-
-
-@timed_run
-def process_web_logs_to_processed(
-    run_id: str,
-    run_ts: datetime,
-    hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
-    return process_file_dataset_to_processed("webserver_logs", run_id, run_ts, hint_raw_paths=hint_raw_paths)

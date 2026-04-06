@@ -16,7 +16,7 @@ class IngestionModel(BaseModel):
 class Watermark(IngestionModel):
     source: IngestionSource | str
     dataset: str
-    stage: IngestionStage | None = None
+    stage: IngestionStage
     mode: ExtractMode | Literal["file_incremental", "snapshot"] | None = None
     watermark_column: str | None = None
     value: str | int | float | datetime | None = None
@@ -40,7 +40,7 @@ class IngestionCheckpoint(IngestionModel):
 class RunManifest(IngestionModel):
     source: IngestionSource | str
     dataset: str
-    stage: IngestionStage | None = None
+    stage: IngestionStage
     run_id: str
     run_ts: datetime
     status: RunStatus

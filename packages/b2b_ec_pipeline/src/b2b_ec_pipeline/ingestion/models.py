@@ -1,25 +1,11 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
-from b2b_ec_pipeline.state.models import (
-    DatasetSchemaSnapshot,
-    IngestionCheckpoint,
-    RunManifest,
-    SchemaColumnSnapshot,
-    Watermark,
-)
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-ExtractMode = Literal["full_snapshot", "incremental_timestamp", "incremental_id"]
-IngestionSource = Literal["postgres", "marketing_leads", "webserver_logs"]
-IngestionStage = Literal["raw_capture", "process", "load"]
-RunStatus = Literal["started", "completed", "failed"]
-
-
-class IngestionModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+from b2b_ec_pipeline.state.models import ExtractMode, IngestionModel, IngestionSource, RunManifest
 
 
 ######################################
@@ -188,6 +174,28 @@ class RawFileCaptureSpec(IngestionModel):
     dataset: str
     pattern_keys: tuple[Literal["marketing_csv", "web_logs_seed_jsonl", "web_logs_daily_jsonl"], ...]
     loader: Literal["marketing_csv", "web_logs_jsonl"]
+
+
+class ManifestBundle(IngestionModel):
+    postgres: list[RunManifest] = Field(default_factory=list)
+    files: dict[str, RunManifest] = Field(default_factory=dict)
+
+
+class PostgresLoadResult(IngestionModel):
+    manifests: list[RunManifest] = Field(default_factory=list)
+    loaded_rows: int = 0
+    loaded_tables: list[str] = Field(default_factory=list)
+
+
+class FileLoadResult(IngestionModel):
+    manifests: dict[str, RunManifest] = Field(default_factory=dict)
+    loaded_rows: int = 0
+    loaded_tables: list[str] = Field(default_factory=list)
+
+
+class LoadBundle(IngestionModel):
+    postgres: PostgresLoadResult
+    files: FileLoadResult
 
 
 ################################################

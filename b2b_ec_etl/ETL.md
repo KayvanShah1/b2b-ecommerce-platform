@@ -43,13 +43,13 @@ flowchart LR
 |---|---|---|---|
 | `defs/generation` | Resource-driven generation, dependency ordering | `source_db_generation` runs first, then file generators depend on it (`deps=[source_db_generation]`) | Guarantees files are generated against a valid/updated relational baseline |
 | `defs/ingestion/asset.py` | Asset-level stage decomposition | Separate assets for raw capture, process, and load with explicit dependencies | Clear observability and rerun boundaries per stage |
-| `defs/ingestion/resources.py` | Orchestrator pattern, fail-soft + optional fail-fast, manifest fallback | `IngestionResource` composes core functions, catches per-dataset exceptions, can continue unless `fail_fast=True`, can resolve latest manifests from state when inputs are missing | Keeps orchestration logic centralized and operationally resilient |
-| `core/models.py` | Typed contracts with Pydantic + config-driven dataset specs | Domain rows, manifests, checkpoints, watermark models, plus `POSTGRES_TABLE_CONFIGS`, `FILE_PROCESS_SPECS`, `FILE_LOAD_SPECS` | Business logic becomes data-driven and easier to extend without rewriting control flow |
-| `core/postgres_raw.py` | Incremental extraction by watermark mode, bounded window extraction, chunked reads | Supports `full_snapshot`, `incremental_timestamp`, `incremental_id`; computes high watermark, queries `(low, high]`, writes chunked parquet | Prevents reprocessing old rows and keeps memory bounded |
-| `core/file_raw.py` | File cursoring, filename timestamp parsing, streaming JSONL chunk parser | Tracks `(cursor_ts, cursor_file)`, discovers only new files, reads JSONL in blocks/chunks, persists checkpoints | Efficient file ingestion with restart safety and deterministic progression |
-| `core/process.py` | Schema normalization, required-field validation, type coercion, dedupe, chunked writes | Ensures model columns exist, drops required-null rows, applies preprocessors, dedupes by keys and sort column, writes processed chunks | Converts messy raw inputs into trusted, typed, analytics-safe datasets |
-| `core/staging.py` | Idempotent upsert pattern with temp tables, multi-target loads | Registers in-memory Arrow tables, deletes matching PK rows, inserts new rows, supports `full_snapshot` replacement | Enables repeated loads without duplicate accumulation |
-| `core/state.py` | Metadata-backed state machine | Writes/reads watermarks, manifests, checkpoints, schema snapshots under storage metadata paths | Enables resumability, lineage, and post-run diagnostics |
+| `defs/ingestion/resources.py` | Orchestrator pattern, fail-soft + optional fail-fast, manifest fallback | `IngestionResource` composes pipeline functions, catches per-dataset exceptions, can continue unless `fail_fast=True`, can resolve latest manifests from state when inputs are missing | Keeps orchestration logic centralized and operationally resilient |
+| `packages/b2b_ec_pipeline/ingestion/models.py` | Typed contracts with Pydantic + config-driven dataset specs | Domain rows, manifests, plus `POSTGRES_TABLE_CONFIGS`, `FILE_PROCESS_SPECS`, `FILE_LOAD_SPECS` | Business logic becomes data-driven and easier to extend without rewriting control flow |
+| `packages/b2b_ec_pipeline/ingestion/postgres_raw.py` | Incremental extraction by watermark mode, bounded window extraction, chunked reads | Supports `full_snapshot`, `incremental_timestamp`, `incremental_id`; computes high watermark, queries `(low, high]`, writes chunked parquet | Prevents reprocessing old rows and keeps memory bounded |
+| `packages/b2b_ec_pipeline/ingestion/file_raw.py` | File cursoring, filename timestamp parsing, streaming JSONL chunk parser | Tracks `(cursor_ts, cursor_file)`, discovers only new files, reads JSONL in blocks/chunks, persists checkpoints | Efficient file ingestion with restart safety and deterministic progression |
+| `packages/b2b_ec_pipeline/ingestion/process.py` | Schema normalization, required-field validation, type coercion, dedupe, chunked writes | Ensures model columns exist, drops required-null rows, applies preprocessors, dedupes by keys and sort column, writes processed chunks | Converts messy raw inputs into trusted, typed, analytics-safe datasets |
+| `packages/b2b_ec_pipeline/ingestion/staging.py` | Idempotent upsert pattern with temp tables, multi-target loads | Registers in-memory Arrow tables, deletes matching PK rows, inserts new rows, supports `full_snapshot` replacement | Enables repeated loads without duplicate accumulation |
+| `packages/b2b_ec_pipeline/state/manager.py` | Metadata-backed state machine | Writes/reads watermarks, manifests, checkpoints, schema snapshots in `etl_metadata` Postgres schema | Enables resumability, lineage, and post-run diagnostics |
 | `defs/analytics` | Dagster-dbt integration | `@dbt_assets` runs `dbt build`; translator maps dbt sources into Dagster `SourceAsset`s | Keeps transformation layer declarative while still orchestrated inside Dagster |
 
 ## Incremental Strategy Matrix
@@ -84,11 +84,11 @@ This ETL treats metadata as a first-class subsystem:
 
 ```mermaid
 flowchart TD
-    MB[(Metadata Bucket / Root)]
-    MB --> W1[watermarks/source/stage/dataset.json]
-    MB --> R1[runs/run_id/source/dataset.json]
-    MB --> L1[lineage/checkpoints/source/dataset/stage/run_id/checkpoint.json]
-    MB --> L2[lineage/snapshots/source/dataset/stage/run_id.json]
+    DB[(Postgres etl_metadata schema)]
+    DB --> W1[watermarks]
+    DB --> R1[run_manifests]
+    DB --> C1[checkpoints]
+    DB --> S1[schema_snapshots]
 ```
 
 ### Per-dataset Lifecycle
@@ -163,7 +163,7 @@ Intuition: same ETL logic should run locally and in cloud with config-only chang
 
 ## Data Quality and Contract Enforcement
 
-Key quality techniques in `core/process.py`:
+Key quality techniques in `packages/b2b_ec_pipeline/ingestion/process.py`:
 
 - **Model column alignment**: missing columns are added as nulls to match contract.
 - **Required field filtering**: records violating required fields are dropped and counted.

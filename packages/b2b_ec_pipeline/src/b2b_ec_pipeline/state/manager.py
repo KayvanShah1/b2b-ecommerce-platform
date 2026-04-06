@@ -11,24 +11,13 @@ from pydantic import BaseModel, TypeAdapter
 
 from b2b_ec_sources import get_connection
 
-from b2b_ec_pipeline.state.models import (
-    DatasetSchemaSnapshot,
-    IngestionCheckpoint,
-    RunManifest,
-    SchemaColumnSnapshot,
-    Watermark,
-)
+from b2b_ec_pipeline.state.models import DatasetSchemaSnapshot, IngestionCheckpoint, RunManifest, SchemaColumnSnapshot, Watermark
 
-DEFAULT_STAGE_KEY = "__default__"
 ETL_METADATA_SCHEMA = "etl_metadata"
 
 _bootstrap_lock = Lock()
 _bootstrapped_schemas: set[str] = set()
 schema_column_list_adapter = TypeAdapter(list[SchemaColumnSnapshot])
-
-
-def _stage_key(stage: str | None) -> str:
-    return stage or DEFAULT_STAGE_KEY
 
 
 def _to_json_safe(value: Any) -> Any:
@@ -200,7 +189,7 @@ class IngestionSnapshotManager:
                         checkpoint.run_id,
                         str(checkpoint.source),
                         checkpoint.dataset,
-                        _stage_key(stage),
+                        stage,
                         stage,
                         checkpoint.checkpoint_name,
                         Json(_to_json_safe(checkpoint.checkpoint_value)),
@@ -250,7 +239,7 @@ class IngestionSnapshotManager:
                         snapshot.run_id,
                         str(snapshot.source),
                         snapshot.dataset,
-                        _stage_key(stage),
+                        stage,
                         stage,
                         snapshot.captured_at,
                         Json(_to_json_safe(payload)),
@@ -272,9 +261,8 @@ class IngestionStateManager:
         self.snapshots = snapshots
         self.schema = schema
 
-    def get_watermark(self, source: str, dataset: str, stage: str | None = None) -> Watermark | None:
+    def get_watermark(self, source: str, dataset: str, stage: str) -> Watermark | None:
         _ensure_schema_bootstrapped(self.schema)
-        requested_stage = stage
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -285,28 +273,15 @@ class IngestionStateManager:
                         WHERE source = %s AND dataset = %s AND stage_key = %s
                         """
                     ).format(schema=sql.Identifier(self.schema)),
-                    (source, dataset, _stage_key(requested_stage)),
+                    (source, dataset, stage),
                 )
                 row = cur.fetchone()
-
-                if row is None and requested_stage is not None:
-                    cur.execute(
-                        sql.SQL(
-                            """
-                            SELECT payload
-                            FROM {schema}.watermarks
-                            WHERE source = %s AND dataset = %s AND stage_key = %s
-                            """
-                        ).format(schema=sql.Identifier(self.schema)),
-                        (source, dataset, _stage_key(None)),
-                    )
-                    row = cur.fetchone()
 
         return Watermark.model_validate(row[0]) if row else None
 
     def put_watermark(self, watermark: Watermark) -> str:
         _ensure_schema_bootstrapped(self.schema)
-        stage = str(watermark.stage) if watermark.stage else None
+        stage = str(watermark.stage)
         payload = watermark.model_dump(mode="json")
 
         with get_connection() as conn:
@@ -333,56 +308,42 @@ class IngestionStateManager:
                     (
                         str(watermark.source),
                         watermark.dataset,
-                        _stage_key(stage),
+                        stage,
                         stage,
                         Json(_to_json_safe(payload)),
                     ),
                 )
 
-        return _state_ref(self.schema, "watermarks", str(watermark.source), watermark.dataset, _stage_key(stage))
+        return _state_ref(self.schema, "watermarks", str(watermark.source), watermark.dataset, stage)
 
     def get_run_manifest(
         self,
         run_id: str,
         source: str,
         dataset: str,
-        stage: str | None = None,
+        stage: str,
     ) -> RunManifest | None:
         _ensure_schema_bootstrapped(self.schema)
         with get_connection() as conn:
             with conn.cursor() as cur:
-                if stage is None:
-                    cur.execute(
-                        sql.SQL(
-                            """
-                            SELECT payload
-                            FROM {schema}.run_manifests
-                            WHERE run_id = %s AND source = %s AND dataset = %s
-                            ORDER BY updated_at DESC
-                            LIMIT 1
-                            """
-                        ).format(schema=sql.Identifier(self.schema)),
-                        (run_id, source, dataset),
-                    )
-                else:
-                    cur.execute(
-                        sql.SQL(
-                            """
-                            SELECT payload
-                            FROM {schema}.run_manifests
-                            WHERE run_id = %s AND source = %s AND dataset = %s AND stage_key = %s
-                            LIMIT 1
-                            """
-                        ).format(schema=sql.Identifier(self.schema)),
-                        (run_id, source, dataset, _stage_key(stage)),
-                    )
+                cur.execute(
+                    sql.SQL(
+                        """
+                        SELECT payload
+                        FROM {schema}.run_manifests
+                        WHERE run_id = %s AND source = %s AND dataset = %s AND stage_key = %s
+                        LIMIT 1
+                        """
+                    ).format(schema=sql.Identifier(self.schema)),
+                    (run_id, source, dataset, stage),
+                )
                 row = cur.fetchone()
 
         return RunManifest.model_validate(row[0]) if row else None
 
     def put_run_manifest(self, manifest: RunManifest) -> str:
         _ensure_schema_bootstrapped(self.schema)
-        stage = str(manifest.stage) if manifest.stage else None
+        stage = str(manifest.stage)
         payload = manifest.model_dump(mode="json")
 
         with get_connection() as conn:
@@ -415,7 +376,7 @@ class IngestionStateManager:
                         manifest.run_id,
                         str(manifest.source),
                         manifest.dataset,
-                        _stage_key(stage),
+                        stage,
                         stage,
                         str(manifest.status),
                         manifest.run_ts,
@@ -429,7 +390,7 @@ class IngestionStateManager:
             manifest.run_id,
             str(manifest.source),
             manifest.dataset,
-            _stage_key(stage),
+            stage,
         )
 
     def start_run(self, manifest: RunManifest) -> RunManifest:
@@ -533,13 +494,13 @@ class IngestionRunContext:
     def _updated_manifest(self, **kwargs: Any) -> RunManifest:
         return self.manifest.model_copy(update=kwargs)
 
-    def complete(self, **kwargs: Any) -> dict[str, Any]:
+    def complete(self, **kwargs: Any) -> RunManifest:
         completed = self.state_manager.complete_run(self._updated_manifest(**kwargs))
-        return completed.model_dump(mode="json")
+        return completed
 
-    def fail(self, error_message: str, **kwargs: Any) -> dict[str, Any]:
+    def fail(self, error_message: str, **kwargs: Any) -> RunManifest:
         failed = self.state_manager.fail_run(self._updated_manifest(**kwargs), error_message=error_message)
-        return failed.model_dump(mode="json")
+        return failed
 
     def checkpoint(self, checkpoint_name: str, checkpoint_value: str | int | float | datetime | None) -> str:
         return self.snapshot_manager.put_checkpoint(
