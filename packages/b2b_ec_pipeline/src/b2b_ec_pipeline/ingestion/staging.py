@@ -5,9 +5,9 @@ from typing import Any
 import polars as pl
 from b2b_ec_utils import settings
 from b2b_ec_utils.logger import get_logger
-from b2b_ec_utils.storage import storage
 from b2b_ec_utils.timer import timed_run
 
+from b2b_ec_pipeline.ingestion.io import read_parquet_frame, schema_columns as build_schema_columns
 from b2b_ec_pipeline.ingestion.models import (
     FileLoadResult,
     FILE_LOAD_SPECS,
@@ -25,17 +25,8 @@ def _quote(identifier: str) -> str:
     return f'"{identifier}"'
 
 
-def _read_parquet(path: str) -> pl.DataFrame:
-    with storage.open(path, mode="rb") as file_handle:
-        return pl.read_parquet(file_handle)
-
-
 def _resolve_paths(hinted_paths: list[str] | None) -> list[str]:
     return sorted(set(hinted_paths or []))
-
-
-def _schema_columns(dataframe: pl.DataFrame) -> list[dict[str, Any]]:
-    return [{"name": name, "dtype": str(dtype), "nullable": True} for name, dtype in dataframe.schema.items()]
 
 
 def _upsert_dataframe(
@@ -80,6 +71,30 @@ def _upsert_dataframe(
     conn.unregister(temp_table)
 
 
+def _target_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = ? AND table_name = ?
+        LIMIT 1
+        """,
+        [settings.ingestion.load_schema, table_name],
+    ).fetchone()
+    return row is not None
+
+
+def _clear_full_snapshot_target_if_exists(conn, target: LoadTargetSpec) -> None:
+    if not target.full_snapshot:
+        return
+    if not _target_exists(conn, target.table):
+        return
+    schema_ref = _quote(settings.ingestion.load_schema)
+    target_ref = f"{schema_ref}.{_quote(target.table)}"
+    conn.execute(f"TRUNCATE TABLE {target_ref}")
+    logger.info(f"STAGING FULL SNAPSHOT CLEAR: target={target.table} reason=no_input_files")
+
+
 def _load_dataset(
     conn,
     spec: LoadDatasetSpec,
@@ -111,7 +126,7 @@ def _load_dataset(
         previous_value = run_ctx.watermark_before.get("value")
         full_snapshot_initialized: set[str] = set()
         for processed_path in processed_paths:
-            dataframe = _read_parquet(processed_path)
+            dataframe = read_parquet_frame(processed_path)
             if dataframe.is_empty():
                 run_ctx.checkpoint("last_file", processed_path)
                 continue
@@ -137,12 +152,16 @@ def _load_dataset(
 
             loaded_rows += dataframe.height
             if not schema_columns:
-                schema_columns = _schema_columns(dataframe)
+                schema_columns = build_schema_columns(dataframe)
 
             run_ctx.checkpoint("last_file", processed_path)
             logger.info(
                 f"STAGING FILE: source={spec.source} dataset={spec.dataset} file={processed_path} rows={dataframe.height}"
             )
+
+        for target in spec.targets:
+            if target.full_snapshot and target.table not in full_snapshot_initialized:
+                _clear_full_snapshot_target_if_exists(conn, target)
 
         watermark_after = {
             "source": spec.source,

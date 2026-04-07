@@ -25,7 +25,6 @@ def peek_latest_raw(source: str, dataset: str, rows: int = 5) -> None:
         f"dataset={dataset}",
         "run_date=*",
         "run_hour=*",
-        "run_id=*",
         "*.parquet",
     )
     latest = _latest_path(pattern)
@@ -41,7 +40,6 @@ def peek_latest_processed(source: str, dataset: str, rows: int = 5) -> None:
         f"dataset={dataset}",
         "run_date=*",
         "run_hour=*",
-        "run_id=*",
         "*.parquet",
     )
     latest = _latest_path(pattern)
