@@ -153,6 +153,7 @@ class ProcessDatasetSpec(IngestionModel):
     model_key: str
     dedupe_keys: tuple[str, ...] = ()
     dedupe_sort_column: str | None = None
+    dedupe_scope: Literal["file", "dataset"] = "file"
     preprocess: Literal["marketing_leads", "webserver_logs"] | None = None
 
 
@@ -240,6 +241,7 @@ FILE_PROCESS_SPECS: dict[str, ProcessDatasetSpec] = {
         model_key="marketing_leads",
         dedupe_keys=("lead_id",),
         dedupe_sort_column="status_updated_at",
+        dedupe_scope="dataset",
         preprocess="marketing_leads",
     ),
     "webserver_logs": ProcessDatasetSpec(

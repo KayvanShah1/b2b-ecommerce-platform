@@ -6,7 +6,7 @@ from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
 from b2b_ec_utils.timer import timed_run
 
-from b2b_ec_pipeline.ingestion.io import write_parquet_chunks
+from b2b_ec_pipeline.ingestion.io import read_parquet_frame, schema_columns as build_schema_columns, write_parquet_chunks
 from b2b_ec_pipeline.ingestion.models import (
     FILE_PROCESS_SPECS,
     FILE_SOURCE_SCHEMAS,
@@ -19,11 +19,6 @@ from b2b_ec_pipeline.state import RunManifest, managed_ingestion_run, state_mana
 
 logger = get_logger("ProcessIngestion")
 PROCESS_WRITE_CHUNK_SIZE = 50_000
-
-
-def _read_parquet(path: str) -> pl.DataFrame:
-    with storage.open(path, mode="rb") as file_handle:
-        return pl.read_parquet(file_handle)
 
 
 def _required_columns(model_cls: type[IngestionModel]) -> list[str]:
@@ -59,10 +54,6 @@ def _dedupe_frame(dataframe: pl.DataFrame, primary_key: tuple[str, ...], sort_co
     if sort_column and sort_column in dataframe.columns:
         dataframe = dataframe.sort(sort_column)
     return dataframe.unique(subset=dedupe_subset, keep="last")
-
-
-def _schema_snapshot_columns(dataframe: pl.DataFrame) -> list[dict[str, Any]]:
-    return [{"name": name, "dtype": str(dtype), "nullable": True} for name, dtype in dataframe.schema.items()]
 
 
 def _parse_datetime_expression(column: str) -> pl.Expr:
@@ -162,12 +153,14 @@ def _process_dataset(
     dataset = spec.dataset
     model_cls = POSTGRES_TABLE_SCHEMAS.get(spec.model_key) or FILE_SOURCE_SCHEMAS[spec.model_key]
     preprocess = PREPROCESSORS.get(spec.preprocess or "")
+    dataset_dedupe = spec.dedupe_scope == "dataset"
 
     raw_paths: list[str] = []
     processed_paths: list[str] = []
     total_rows = 0
     bad_rows = 0
     schema_columns: list[dict[str, Any]] = []
+    dataset_frames: list[pl.DataFrame] = []
     with managed_ingestion_run(
         state_manager=state_manager,
         run_id=run_id,
@@ -191,7 +184,7 @@ def _process_dataset(
         )
 
         for file_index, raw_path in enumerate(raw_paths):
-            dataframe = _read_parquet(raw_path)
+            dataframe = read_parquet_frame(raw_path)
             if preprocess:
                 dataframe = preprocess(dataframe)
             dataframe = _ensure_model_columns(dataframe, model_cls)
@@ -208,23 +201,32 @@ def _process_dataset(
                 run_ctx.checkpoint("last_file", raw_path)
                 continue
 
+            if dataset_dedupe:
+                dataset_frames.append(dataframe)
+                run_ctx.checkpoint("last_file", raw_path)
+                logger.info(
+                    f"PROCESS FILE STAGED: source={source} dataset={dataset} raw_path={raw_path} "
+                    f"rows={dataframe.height} bad_rows={file_bad_rows}"
+                )
+                continue
+
             before_dedupe = dataframe.height
-            dataframe = _dedupe_frame(dataframe, spec.dedupe_keys, spec.dedupe_sort_column)
-            if dataframe.height != before_dedupe:
+            deduped_frame = _dedupe_frame(dataframe, spec.dedupe_keys, spec.dedupe_sort_column)
+            if deduped_frame.height != before_dedupe:
                 logger.info(
                     f"PROCESS DEDUPE: source={source} dataset={dataset} raw_path={raw_path} "
-                    f"before={before_dedupe} after={dataframe.height}"
+                    f"before={before_dedupe} after={deduped_frame.height}"
                 )
 
             if not schema_columns:
-                schema_columns = _schema_snapshot_columns(dataframe)
+                schema_columns = build_schema_columns(deduped_frame)
 
             chunk_paths, chunk_rows = _write_processed_chunks(
                 source=source,
                 dataset=dataset,
                 run_id=run_id,
                 run_ts=run_ts,
-                dataframe=dataframe,
+                dataframe=deduped_frame,
                 file_index=file_index,
             )
             processed_paths.extend(chunk_paths)
@@ -235,6 +237,28 @@ def _process_dataset(
                 f"PROCESS FILE: source={source} dataset={dataset} raw_path={raw_path} "
                 f"processed_files={len(chunk_paths)} rows={chunk_rows} bad_rows={file_bad_rows}"
             )
+
+        if dataset_dedupe and dataset_frames:
+            combined = pl.concat(dataset_frames, how="vertical_relaxed", rechunk=True)
+            before_dedupe = combined.height
+            deduped_combined = _dedupe_frame(combined, spec.dedupe_keys, spec.dedupe_sort_column)
+            if deduped_combined.height != before_dedupe:
+                logger.info(
+                    f"PROCESS DATASET DEDUPE: source={source} dataset={dataset} "
+                    f"before={before_dedupe} after={deduped_combined.height}"
+                )
+
+            schema_columns = build_schema_columns(deduped_combined)
+            chunk_paths, chunk_rows = _write_processed_chunks(
+                source=source,
+                dataset=dataset,
+                run_id=run_id,
+                run_ts=run_ts,
+                dataframe=deduped_combined,
+                file_index=0,
+            )
+            processed_paths.extend(chunk_paths)
+            total_rows += chunk_rows
 
         if not raw_paths:
             logger.info(
