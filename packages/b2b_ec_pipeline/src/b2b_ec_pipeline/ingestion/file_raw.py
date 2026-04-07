@@ -9,7 +9,7 @@ from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
 from b2b_ec_utils.timer import timed_run
 
-from b2b_ec_pipeline.ingestion.io import write_parquet_frame
+from b2b_ec_pipeline.ingestion.io import schema_columns as build_schema_columns, write_parquet_frame
 from b2b_ec_pipeline.ingestion.models import FILE_RAW_CAPTURE_SPECS, RawFileCaptureSpec
 from b2b_ec_pipeline.state import IngestionRunContext, RunManifest, managed_ingestion_run, state_manager
 
@@ -130,13 +130,17 @@ def _source_sort_key(path: str) -> tuple[str, str]:
 def _normalize_cursor(value: str | None, last_file: str | None) -> tuple[str | None, str | None]:
     if value and SOURCE_FILE_TS_PATTERN.fullmatch(value):
         return value, last_file
+    if last_file:
+        inferred = _source_file_ts(last_file)
+        if inferred:
+            return inferred, last_file
     return None, last_file
 
 
 def _is_new_file(path: str, cursor_ts: str | None, cursor_file: str | None) -> bool:
     ts_key = _source_file_ts(path)
     if cursor_ts is None:
-        return True
+        return True if cursor_file is None else path > cursor_file
     if ts_key is None:
         logger.warning(f"FILE RAW DISCOVERY: timestamp missing in file name, using path fallback: {path}")
         return True if cursor_file is None else path > cursor_file
@@ -155,10 +159,6 @@ def _collect_new_files(
     discovered = sorted(set(path for pattern in patterns for path in storage.glob(pattern)), key=_source_sort_key)
     new_files = [path for path in discovered if _is_new_file(path, cursor_ts, cursor_file)]
     return discovered, new_files
-
-
-def _schema_columns(dataframe: pl.DataFrame) -> list[dict[str, Any]]:
-    return [{"name": name, "dtype": str(dtype), "nullable": True} for name, dtype in dataframe.schema.items()]
 
 
 def _raw_output_path(source_key: str, dataset: str, source_file: str, run_id: str, run_ts: datetime, suffix: str) -> str:
@@ -194,7 +194,7 @@ def _capture_marketing_files(
         output_paths.append(output_path)
         total_rows += frame.height
         if not columns:
-            columns = _schema_columns(frame)
+            columns = build_schema_columns(frame)
         run_ctx.checkpoint("last_file", source_file)
 
     return output_paths, total_rows, columns, 0
@@ -227,14 +227,15 @@ def _capture_web_logs_files(
             output_paths.append(output_path)
             total_rows += frame.height
             if not columns:
-                columns = _schema_columns(frame)
+                columns = build_schema_columns(frame)
 
-            run_ctx.checkpoint("last_chunk", f"{source_file}#{chunk_index}")
             logger.info(
                 f"FILE RAW CHUNK: dataset={spec.dataset} source={source_file} "
                 f"chunk={chunk_index} rows={frame.height} output={output_path}"
             )
             chunk_index += 1
+
+        run_ctx.checkpoint("last_file", source_file)
 
     return output_paths, total_rows, columns, total_bad_lines
 
@@ -263,7 +264,7 @@ def _ingest_file_source(spec: RawFileCaptureSpec, run_id: str, run_ts: datetime)
         discovered_files, new_files = _collect_new_files(_resolve_patterns(spec), previous_ts, previous_file)
         skipped_count = len(discovered_files) - len(new_files)
         latest_new_file = new_files[-1] if new_files else previous_file
-        latest_new_ts = _source_file_ts(latest_new_file) if latest_new_file else previous_ts
+        latest_new_ts = (_source_file_ts(latest_new_file) if latest_new_file else None) or previous_ts
         logger.info(
             f"FILE RAW DISCOVERY: source={spec.source} discovered={len(discovered_files)} "
             f"new={len(new_files)} skipped={skipped_count} wm_before_ts={previous_ts} wm_before_file={previous_file}"

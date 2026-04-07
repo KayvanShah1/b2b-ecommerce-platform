@@ -8,9 +8,9 @@ from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
 from b2b_ec_utils.timer import timed_run
 
-from b2b_ec_pipeline.ingestion.io import write_parquet_frame
+from b2b_ec_pipeline.ingestion.io import schema_columns as build_schema_columns, write_parquet_frame
 from b2b_ec_pipeline.ingestion.models import PostgresTableConfig
-from b2b_ec_pipeline.state import IngestionRunContext, RunManifest, managed_ingestion_run, state_manager
+from b2b_ec_pipeline.state import RunManifest, managed_ingestion_run, state_manager
 
 logger = get_logger("PostgresRawIngestion")
 FETCH_BATCH_SIZE = 50_000
@@ -76,10 +76,6 @@ def _log_extract_plan(table_cfg: PostgresTableConfig, previous_value: Any, high_
     )
 
 
-def _schema_columns(dataframe: pl.DataFrame) -> list[dict[str, Any]]:
-    return [{"name": name, "dtype": str(dtype), "nullable": True} for name, dtype in dataframe.schema.items()]
-
-
 def _chunk_output_path(dataset: str, run_id: str, run_ts: datetime, chunk_index: int) -> str:
     return storage.get_raw_dataset_path(
         "postgres",
@@ -94,7 +90,6 @@ def _write_cursor_chunks(
     cur,
     columns: list[str],
     table_cfg: PostgresTableConfig,
-    run_ctx: IngestionRunContext,
     run_id: str,
     run_ts: datetime,
 ) -> tuple[list[str], int, list[dict[str, Any]]]:
@@ -108,16 +103,17 @@ def _write_cursor_chunks(
         if not rows:
             break
 
-        dataframe = pl.DataFrame([tuple(_normalize_value(value) for value in row) for row in rows], schema=columns, orient="row")
+        dataframe = pl.DataFrame(
+            [tuple(_normalize_value(value) for value in row) for row in rows], schema=columns, orient="row"
+        )
         if not schema_columns:
-            schema_columns = _schema_columns(dataframe)
+            schema_columns = build_schema_columns(dataframe)
 
         output_path = _chunk_output_path(table_cfg.name, run_id, run_ts, chunk_index)
         write_parquet_frame(output_path, dataframe)
 
         raw_paths.append(output_path)
         row_count += len(rows)
-        run_ctx.checkpoint("last_chunk", chunk_index)
         logger.info(
             f"POSTGRES RAW CHUNK: dataset={table_cfg.name} chunk={chunk_index} rows={len(rows)} output={output_path}"
         )
@@ -153,7 +149,6 @@ def extract_postgres_table_to_raw(table_cfg: PostgresTableConfig, run_id: str, r
                     cur=cur,
                     columns=columns,
                     table_cfg=table_cfg,
-                    run_ctx=run_ctx,
                     run_id=run_id,
                     run_ts=run_ts,
                 )
