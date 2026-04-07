@@ -49,7 +49,7 @@ flowchart LR
 | `packages/b2b_ec_pipeline/ingestion/file_raw.py` | File cursoring, filename timestamp parsing, streaming JSONL chunk parser | Tracks `(cursor_ts, cursor_file)`, discovers only new files, reads JSONL in blocks/chunks, persists checkpoints | Efficient file ingestion with restart safety and deterministic progression |
 | `packages/b2b_ec_pipeline/ingestion/process.py` | Schema normalization, required-field validation, type coercion, dedupe, chunked writes | Ensures model columns exist, drops required-null rows, applies preprocessors, dedupes by keys and sort column, writes processed chunks | Converts messy raw inputs into trusted, typed, analytics-safe datasets |
 | `packages/b2b_ec_pipeline/ingestion/staging.py` | Idempotent upsert pattern with temp tables, multi-target loads | Registers in-memory Arrow tables, deletes matching PK rows, inserts new rows, supports `full_snapshot` replacement | Enables repeated loads without duplicate accumulation |
-| `packages/b2b_ec_pipeline/state/manager.py` | Metadata-backed state machine | Writes/reads watermarks, manifests, checkpoints, schema snapshots in `etl_metadata` Postgres schema | Enables resumability, lineage, and post-run diagnostics |
+| `packages/b2b_ec_pipeline/state/*` | Metadata-backed state system | `bootstrap.py` manages schema lifecycle; `state_manager.py` and `snapshot_manager.py` persist state; `archive.py` writes cold metadata archives | Enables resumability, lineage, and post-run diagnostics |
 | `defs/analytics` | Dagster-dbt integration | `@dbt_assets` runs `dbt build`; translator maps dbt sources into Dagster `SourceAsset`s | Keeps transformation layer declarative while still orchestrated inside Dagster |
 
 ## Incremental Strategy Matrix
@@ -85,10 +85,13 @@ This ETL treats metadata as a first-class subsystem:
 ```mermaid
 flowchart TD
     DB[(Postgres etl_metadata schema)]
+    BUCKET[(Metadata Bucket Archive)]
     DB --> W1[watermarks]
-    DB --> R1[run_manifests]
+    DB --> R1[runs]
+    DB --> RP1[run_paths]
     DB --> C1[checkpoints]
-    DB --> S1[schema_snapshots]
+    DB --> S1[schema_snapshots + schema_snapshot_columns]
+    DB -.cold audit copy.-> BUCKET
 ```
 
 ### Per-dataset Lifecycle
