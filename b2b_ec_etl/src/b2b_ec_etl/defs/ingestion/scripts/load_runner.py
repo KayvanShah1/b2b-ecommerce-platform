@@ -23,11 +23,15 @@ def _safe_db_uri(uri: str) -> str:
 @timed_run
 def run_load_only(run_id: str | None = None) -> dict[str, object]:
     run_ts = datetime.now(timezone.utc)
-    effective_run_id = run_id or f"manual-load-{run_ts.strftime('%Y%m%dT%H%M%S')}"
-    logger.info(f"LOAD ONLY START: run_id={effective_run_id}")
+    default_run_id = f"manual-load-{run_ts.strftime('%Y%m%dT%H%M%S')}"
 
     resource = IngestionResource()
     postgres_manifests, file_manifests = resource.resolve_process_manifests()
+    resolved_run_id = resource.resolved_run_id(postgres_manifests, file_manifests)
+    effective_run_id = run_id or resolved_run_id or default_run_id
+    logger.info(f"LOAD ONLY START: run_id={effective_run_id}")
+    if run_id is None and resolved_run_id:
+        logger.info(f"LOAD ONLY RUN_ID: using resolved process run_id={resolved_run_id}")
     logger.info(
         f"LOAD ONLY MANIFESTS: run_id={effective_run_id} "
         f"postgres={len(postgres_manifests)} files={len(file_manifests)}"

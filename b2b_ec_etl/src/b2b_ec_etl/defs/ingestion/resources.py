@@ -31,6 +31,7 @@ logger = get_logger("IngestionResource")
 class IngestionResource(ConfigurableResource):
     include_postgres_tables: list[str] = Field(default_factory=list)
     fail_fast: bool = False
+    enforce_run_coherence: bool = True
 
     def _selected_postgres_configs(self):
         if not self.include_postgres_tables:
@@ -96,8 +97,32 @@ class IngestionResource(ConfigurableResource):
     def _latest_manifest_for_stage(self, source: str, dataset: str, stage: str) -> RunManifest | None:
         return state_resolver.latest_completed_manifest(source=source, dataset=dataset, stage=stage)
 
+    def _manifest_run_ids(
+        self,
+        postgres_manifests: list[RunManifest],
+        file_manifests: dict[str, RunManifest],
+    ) -> set[str]:
+        run_ids = {manifest.run_id for manifest in postgres_manifests if manifest.run_id}
+        run_ids.update(manifest.run_id for manifest in file_manifests.values() if manifest.run_id)
+        return run_ids
+
+    def _enforce_run_coherence(
+        self,
+        stage: str,
+        postgres_manifests: list[RunManifest],
+        file_manifests: dict[str, RunManifest],
+    ) -> None:
+        run_ids = self._manifest_run_ids(postgres_manifests, file_manifests)
+        if len(run_ids) <= 1:
+            return
+        message = f"{stage.upper()} RESOLVE: mixed run_ids detected ({len(run_ids)} runs) -> {sorted(run_ids)}"
+        if self.enforce_run_coherence:
+            raise RuntimeError(message)
+        logger.warning(message)
+
     def _resolve_raw_result(self, raw_result: ManifestBundle | None) -> ManifestBundle:
         if raw_result is not None:
+            self._enforce_run_coherence("process", raw_result.postgres, raw_result.files)
             return raw_result
 
         postgres_manifests: list[RunManifest] = []
@@ -112,6 +137,7 @@ class IngestionResource(ConfigurableResource):
             if manifest:
                 file_manifests[dataset_key] = manifest
 
+        self._enforce_run_coherence("process", postgres_manifests, file_manifests)
         return ManifestBundle(postgres=postgres_manifests, files=file_manifests)
 
     def _resolve_process_manifests(
@@ -150,7 +176,18 @@ class IngestionResource(ConfigurableResource):
                         f"LOAD RESOLVE: source={spec.source} dataset={spec.dataset} no completed process manifest"
                     )
 
+        self._enforce_run_coherence("load", postgres_manifests, file_manifests)
         return postgres_manifests, file_manifests
+
+    def resolved_run_id(
+        self,
+        postgres_manifests: list[RunManifest],
+        file_manifests: dict[str, RunManifest],
+    ) -> str | None:
+        run_ids = self._manifest_run_ids(postgres_manifests, file_manifests)
+        if len(run_ids) != 1:
+            return None
+        return next(iter(run_ids))
 
     def resolve_process_manifests(
         self,
