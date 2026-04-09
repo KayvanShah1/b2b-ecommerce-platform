@@ -6,7 +6,8 @@ from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.storage import storage
 from b2b_ec_utils.timer import timed_run
 
-from b2b_ec_etl.defs.ingestion.core.models import (
+from b2b_ec_pipeline.ingestion.io import read_parquet_frame, schema_columns as build_schema_columns, write_parquet_chunks
+from b2b_ec_pipeline.ingestion.models import (
     FILE_PROCESS_SPECS,
     FILE_SOURCE_SCHEMAS,
     POSTGRES_TABLE_SCHEMAS,
@@ -14,15 +15,10 @@ from b2b_ec_etl.defs.ingestion.core.models import (
     ProcessDatasetSpec,
     PostgresTableConfig,
 )
-from b2b_ec_etl.defs.ingestion.core.state import state_manager
+from b2b_ec_pipeline.state import RunManifest, managed_ingestion_run, state_manager
 
 logger = get_logger("ProcessIngestion")
 PROCESS_WRITE_CHUNK_SIZE = 50_000
-
-
-def _read_parquet(path: str) -> pl.DataFrame:
-    with storage.open(path, mode="rb") as file_handle:
-        return pl.read_parquet(file_handle)
 
 
 def _required_columns(model_cls: type[IngestionModel]) -> list[str]:
@@ -60,10 +56,6 @@ def _dedupe_frame(dataframe: pl.DataFrame, primary_key: tuple[str, ...], sort_co
     return dataframe.unique(subset=dedupe_subset, keep="last")
 
 
-def _schema_snapshot_columns(dataframe: pl.DataFrame) -> list[dict[str, Any]]:
-    return [{"name": name, "dtype": str(dtype), "nullable": True} for name, dtype in dataframe.schema.items()]
-
-
 def _parse_datetime_expression(column: str) -> pl.Expr:
     text_col = (
         pl.col(column)
@@ -91,30 +83,17 @@ def _write_processed_chunks(
     dataframe: pl.DataFrame,
     file_index: int,
 ) -> tuple[list[str], int]:
-    if dataframe.is_empty():
-        return [], 0
-
-    output_paths: list[str] = []
-    total_rows = 0
-    chunk_index = 0
-
-    for start in range(0, dataframe.height, PROCESS_WRITE_CHUNK_SIZE):
-        chunk = dataframe.slice(start, PROCESS_WRITE_CHUNK_SIZE)
-        output_path = storage.get_processed_dataset_path(
+    return write_parquet_chunks(
+        dataframe=dataframe,
+        chunk_size=PROCESS_WRITE_CHUNK_SIZE,
+        output_path_for_chunk=lambda chunk_index: storage.get_processed_dataset_path(
             source,
             f"dataset={dataset}",
             f"run_date={run_ts.strftime('%Y-%m-%d')}",
             f"run_hour={run_ts.strftime('%H')}",
-            f"run_id={run_id}",
-            f"file-{file_index:05d}-part-{chunk_index:05d}.parquet",
-        )
-        with storage.open(output_path, mode="wb") as file_handle:
-            chunk.write_parquet(file_handle)
-        output_paths.append(output_path)
-        total_rows += chunk.height
-        chunk_index += 1
-
-    return output_paths, total_rows
+            f"{run_id}_file-{file_index:05d}-part-{chunk_index:05d}.parquet",
+        ),
+    )
 
 
 def _preprocess_marketing(dataframe: pl.DataFrame) -> pl.DataFrame:
@@ -169,29 +148,35 @@ def _process_dataset(
     run_id: str,
     run_ts: datetime,
     hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> RunManifest:
     source = spec.source
     dataset = spec.dataset
     model_cls = POSTGRES_TABLE_SCHEMAS.get(spec.model_key) or FILE_SOURCE_SCHEMAS[spec.model_key]
     preprocess = PREPROCESSORS.get(spec.preprocess or "")
-
-    run_ctx = state_manager.open_run(
-        run_id=run_id,
-        source=source,
-        dataset=dataset,
-        run_ts=run_ts,
-        stage="process",
-        processed_files=hint_raw_paths or [],
-    )
-    required_cols = _required_columns(model_cls)
+    dataset_dedupe = spec.dedupe_scope == "dataset"
 
     raw_paths: list[str] = []
     processed_paths: list[str] = []
     total_rows = 0
     bad_rows = 0
     schema_columns: list[dict[str, Any]] = []
-
-    try:
+    dataset_frames: list[pl.DataFrame] = []
+    with managed_ingestion_run(
+        state_manager=state_manager,
+        run_id=run_id,
+        source=source,
+        dataset=dataset,
+        run_ts=run_ts,
+        stage="process",
+        processed_files=hint_raw_paths or [],
+        failure_context=lambda: {
+            "raw_paths": raw_paths,
+            "processed_paths": processed_paths,
+            "record_count": total_rows,
+            "bad_record_count": bad_rows,
+        },
+    ) as run_ctx:
+        required_cols = _required_columns(model_cls)
         raw_paths = _resolve_candidate_paths(hint_raw_paths)
         logger.info(
             f"PROCESS INPUT: source={source} dataset={dataset} input_files={len(raw_paths)} "
@@ -199,7 +184,7 @@ def _process_dataset(
         )
 
         for file_index, raw_path in enumerate(raw_paths):
-            dataframe = _read_parquet(raw_path)
+            dataframe = read_parquet_frame(raw_path)
             if preprocess:
                 dataframe = preprocess(dataframe)
             dataframe = _ensure_model_columns(dataframe, model_cls)
@@ -216,23 +201,32 @@ def _process_dataset(
                 run_ctx.checkpoint("last_file", raw_path)
                 continue
 
+            if dataset_dedupe:
+                dataset_frames.append(dataframe)
+                run_ctx.checkpoint("last_file", raw_path)
+                logger.info(
+                    f"PROCESS FILE STAGED: source={source} dataset={dataset} raw_path={raw_path} "
+                    f"rows={dataframe.height} bad_rows={file_bad_rows}"
+                )
+                continue
+
             before_dedupe = dataframe.height
-            dataframe = _dedupe_frame(dataframe, spec.dedupe_keys, spec.dedupe_sort_column)
-            if dataframe.height != before_dedupe:
+            deduped_frame = _dedupe_frame(dataframe, spec.dedupe_keys, spec.dedupe_sort_column)
+            if deduped_frame.height != before_dedupe:
                 logger.info(
                     f"PROCESS DEDUPE: source={source} dataset={dataset} raw_path={raw_path} "
-                    f"before={before_dedupe} after={dataframe.height}"
+                    f"before={before_dedupe} after={deduped_frame.height}"
                 )
 
             if not schema_columns:
-                schema_columns = _schema_snapshot_columns(dataframe)
+                schema_columns = build_schema_columns(deduped_frame)
 
             chunk_paths, chunk_rows = _write_processed_chunks(
                 source=source,
                 dataset=dataset,
                 run_id=run_id,
                 run_ts=run_ts,
-                dataframe=dataframe,
+                dataframe=deduped_frame,
                 file_index=file_index,
             )
             processed_paths.extend(chunk_paths)
@@ -243,6 +237,28 @@ def _process_dataset(
                 f"PROCESS FILE: source={source} dataset={dataset} raw_path={raw_path} "
                 f"processed_files={len(chunk_paths)} rows={chunk_rows} bad_rows={file_bad_rows}"
             )
+
+        if dataset_dedupe and dataset_frames:
+            combined = pl.concat(dataset_frames, how="vertical_relaxed", rechunk=True)
+            before_dedupe = combined.height
+            deduped_combined = _dedupe_frame(combined, spec.dedupe_keys, spec.dedupe_sort_column)
+            if deduped_combined.height != before_dedupe:
+                logger.info(
+                    f"PROCESS DATASET DEDUPE: source={source} dataset={dataset} "
+                    f"before={before_dedupe} after={deduped_combined.height}"
+                )
+
+            schema_columns = build_schema_columns(deduped_combined)
+            chunk_paths, chunk_rows = _write_processed_chunks(
+                source=source,
+                dataset=dataset,
+                run_id=run_id,
+                run_ts=run_ts,
+                dataframe=deduped_combined,
+                file_index=0,
+            )
+            processed_paths.extend(chunk_paths)
+            total_rows += chunk_rows
 
         if not raw_paths:
             logger.info(
@@ -278,17 +294,6 @@ def _process_dataset(
             f"processed_files={len(processed_paths)} rows={total_rows} bad_rows={bad_rows}"
         )
         return completed_manifest
-    except Exception as exc:
-        run_ctx.fail(
-            error_message=str(exc),
-            raw_paths=raw_paths,
-            processed_paths=processed_paths,
-            record_count=total_rows,
-            bad_record_count=bad_rows,
-            watermark_before=run_ctx.watermark_before,
-        )
-        run_ctx.checkpoint("status", "failed")
-        raise
 
 
 @timed_run
@@ -297,7 +302,7 @@ def process_postgres_dataset_to_processed(
     run_id: str,
     run_ts: datetime,
     hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> RunManifest:
     spec = ProcessDatasetSpec(
         source="postgres",
         dataset=table_cfg.name,
@@ -314,27 +319,14 @@ def process_postgres_dataset_to_processed(
 
 
 @timed_run
-def process_marketing_to_processed(
+def process_file_dataset_to_processed(
+    dataset_key: str,
     run_id: str,
     run_ts: datetime,
     hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
+) -> RunManifest:
     return _process_dataset(
-        spec=FILE_PROCESS_SPECS["marketing_leads"],
-        run_id=run_id,
-        run_ts=run_ts,
-        hint_raw_paths=hint_raw_paths,
-    )
-
-
-@timed_run
-def process_web_logs_to_processed(
-    run_id: str,
-    run_ts: datetime,
-    hint_raw_paths: list[str] | None = None,
-) -> dict[str, Any]:
-    return _process_dataset(
-        spec=FILE_PROCESS_SPECS["webserver_logs"],
+        spec=FILE_PROCESS_SPECS[dataset_key],
         run_id=run_id,
         run_ts=run_ts,
         hint_raw_paths=hint_raw_paths,

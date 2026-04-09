@@ -14,6 +14,7 @@ dependencies = [
     # Custom Packages
     "b2b-ec-utils",
     "b2b-ec-sources",
+    "b2b-ec-pipeline",
 ]
 
 [dependency-groups]
@@ -36,3 +37,4 @@ registry_modules = ["b2b_ec_etl.components.*"]
 [tool.uv.sources]
 b2b-ec-utils = { workspace = true, editable = true }
 b2b-ec-sources = { workspace = true, editable = true }
+b2b-ec-pipeline = { workspace = true, editable = true }

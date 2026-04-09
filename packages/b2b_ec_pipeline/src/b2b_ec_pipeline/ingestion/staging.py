@@ -5,16 +5,18 @@ from typing import Any
 import polars as pl
 from b2b_ec_utils import settings
 from b2b_ec_utils.logger import get_logger
-from b2b_ec_utils.storage import storage
 from b2b_ec_utils.timer import timed_run
 
-from b2b_ec_etl.defs.ingestion.core.models import (
+from b2b_ec_pipeline.ingestion.io import read_parquet_frame, schema_columns as build_schema_columns
+from b2b_ec_pipeline.ingestion.models import (
+    FileLoadResult,
     FILE_LOAD_SPECS,
     LoadDatasetSpec,
     LoadTargetSpec,
+    PostgresLoadResult,
     PostgresTableConfig,
 )
-from b2b_ec_etl.defs.ingestion.core.state import state_manager
+from b2b_ec_pipeline.state import RunManifest, managed_ingestion_run, state_manager
 
 logger = get_logger("StagingLoad")
 
@@ -23,20 +25,17 @@ def _quote(identifier: str) -> str:
     return f'"{identifier}"'
 
 
-def _read_parquet(path: str) -> pl.DataFrame:
-    with storage.open(path, mode="rb") as file_handle:
-        return pl.read_parquet(file_handle)
-
-
 def _resolve_paths(hinted_paths: list[str] | None) -> list[str]:
     return sorted(set(hinted_paths or []))
 
 
-def _schema_columns(dataframe: pl.DataFrame) -> list[dict[str, Any]]:
-    return [{"name": name, "dtype": str(dtype), "nullable": True} for name, dtype in dataframe.schema.items()]
-
-
-def _upsert_dataframe(conn, dataframe: pl.DataFrame, target: LoadTargetSpec) -> None:
+def _upsert_dataframe(
+    conn,
+    dataframe: pl.DataFrame,
+    target: LoadTargetSpec,
+    *,
+    replace_full_snapshot: bool = True,
+) -> None:
     if dataframe.is_empty():
         return
 
@@ -49,7 +48,10 @@ def _upsert_dataframe(conn, dataframe: pl.DataFrame, target: LoadTargetSpec) -> 
     temp_ref = _quote(temp_table)
 
     if target.full_snapshot:
-        conn.execute(f"CREATE OR REPLACE TABLE {target_ref} AS SELECT * FROM {temp_ref}")
+        if replace_full_snapshot:
+            conn.execute(f"CREATE OR REPLACE TABLE {target_ref} AS SELECT * FROM {temp_ref}")
+        else:
+            conn.execute(f"INSERT INTO {target_ref} SELECT * FROM {temp_ref}")
         conn.unregister(temp_table)
         return
 
@@ -69,22 +71,37 @@ def _upsert_dataframe(conn, dataframe: pl.DataFrame, target: LoadTargetSpec) -> 
     conn.unregister(temp_table)
 
 
+def _target_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = ? AND table_name = ?
+        LIMIT 1
+        """,
+        [settings.ingestion.load_schema, table_name],
+    ).fetchone()
+    return row is not None
+
+
+def _clear_full_snapshot_target_if_exists(conn, target: LoadTargetSpec) -> None:
+    if not target.full_snapshot:
+        return
+    if not _target_exists(conn, target.table):
+        return
+    schema_ref = _quote(settings.ingestion.load_schema)
+    target_ref = f"{schema_ref}.{_quote(target.table)}"
+    conn.execute(f"TRUNCATE TABLE {target_ref}")
+    logger.info(f"STAGING FULL SNAPSHOT CLEAR: target={target.table} reason=no_input_files")
+
+
 def _load_dataset(
     conn,
     spec: LoadDatasetSpec,
     run_id: str,
     run_ts: datetime,
     hinted_paths: list[str] | None = None,
-) -> dict[str, Any]:
-    run_ctx = state_manager.open_run(
-        run_id=run_id,
-        source=spec.source,
-        dataset=spec.dataset,
-        run_ts=run_ts,
-        stage="load",
-        processed_files=hinted_paths or [],
-    )
-    previous_value = run_ctx.watermark_before.get("value")
+) -> RunManifest:
     processed_paths = _resolve_paths(hinted_paths)
     logger.info(
         f"STAGING INPUT: source={spec.source} dataset={spec.dataset} input_files={len(processed_paths)} "
@@ -93,20 +110,41 @@ def _load_dataset(
 
     loaded_rows = 0
     schema_columns: list[dict[str, Any]] = []
-
-    try:
+    with managed_ingestion_run(
+        state_manager=state_manager,
+        run_id=run_id,
+        source=spec.source,
+        dataset=spec.dataset,
+        run_ts=run_ts,
+        stage="load",
+        processed_files=hinted_paths or [],
+        failure_context=lambda: {
+            "processed_paths": processed_paths,
+            "record_count": loaded_rows,
+        },
+    ) as run_ctx:
+        previous_value = run_ctx.watermark_before.get("value")
+        full_snapshot_initialized: set[str] = set()
         for processed_path in processed_paths:
-            dataframe = _read_parquet(processed_path)
+            dataframe = read_parquet_frame(processed_path)
             if dataframe.is_empty():
                 run_ctx.checkpoint("last_file", processed_path)
                 continue
 
             for target in spec.targets:
+                replace_full_snapshot = target.table not in full_snapshot_initialized
                 logger.info(
                     f"STAGING UPSERT START: source={spec.source} dataset={spec.dataset} "
                     f"target={target.table} file={processed_path} rows={dataframe.height}"
                 )
-                _upsert_dataframe(conn, dataframe, target)
+                _upsert_dataframe(
+                    conn,
+                    dataframe,
+                    target,
+                    replace_full_snapshot=replace_full_snapshot,
+                )
+                if target.full_snapshot:
+                    full_snapshot_initialized.add(target.table)
                 logger.info(
                     f"STAGING UPSERT COMPLETE: source={spec.source} dataset={spec.dataset} "
                     f"target={target.table} file={processed_path}"
@@ -114,12 +152,16 @@ def _load_dataset(
 
             loaded_rows += dataframe.height
             if not schema_columns:
-                schema_columns = _schema_columns(dataframe)
+                schema_columns = build_schema_columns(dataframe)
 
             run_ctx.checkpoint("last_file", processed_path)
             logger.info(
                 f"STAGING FILE: source={spec.source} dataset={spec.dataset} file={processed_path} rows={dataframe.height}"
             )
+
+        for target in spec.targets:
+            if target.full_snapshot and target.table not in full_snapshot_initialized:
+                _clear_full_snapshot_target_if_exists(conn, target)
 
         watermark_after = {
             "source": spec.source,
@@ -143,15 +185,21 @@ def _load_dataset(
             f"STAGING LOAD: source={spec.source} dataset={spec.dataset} files={len(processed_paths)} rows={loaded_rows}"
         )
         return completed_manifest
-    except Exception as exc:
-        run_ctx.fail(
-            error_message=str(exc),
-            processed_paths=processed_paths,
-            record_count=loaded_rows,
-            watermark_before=run_ctx.watermark_before,
-        )
-        run_ctx.checkpoint("status", "failed")
-        raise
+
+
+def _failed_manifest(spec: LoadDatasetSpec, run_id: str, run_ts: datetime, error_message: str) -> RunManifest:
+    return RunManifest(
+        source=spec.source,
+        dataset=spec.dataset,
+        stage="load",
+        run_id=run_id,
+        run_ts=run_ts,
+        status="failed",
+        record_count=0,
+        bad_record_count=0,
+        processed_paths=[],
+        error_message=error_message,
+    )
 
 
 def _postgres_load_spec(table_cfg: PostgresTableConfig) -> LoadDatasetSpec:
@@ -175,10 +223,10 @@ def load_postgres_manifests_to_staging(
     table_configs: tuple[PostgresTableConfig, ...],
     run_id: str,
     run_ts: datetime,
-    manifests: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    hinted_paths_by_dataset = {manifest["dataset"]: manifest.get("processed_paths", []) for manifest in manifests or []}
-    load_manifests: list[dict[str, Any]] = []
+    manifests: list[RunManifest] | None = None,
+) -> PostgresLoadResult:
+    hinted_paths_by_dataset = {manifest.dataset: manifest.processed_paths for manifest in manifests or []}
+    load_manifests: list[RunManifest] = []
     loaded_rows = 0
     loaded_tables: list[str] = []
 
@@ -193,24 +241,13 @@ def load_postgres_manifests_to_staging(
                 hinted_paths=hinted_paths_by_dataset.get(table_cfg.name),
             )
             load_manifests.append(manifest)
-            loaded_rows += int(manifest.get("record_count", 0))
+            loaded_rows += manifest.record_count
             loaded_tables.extend([target.table for target in spec.targets])
         except Exception as exc:
             logger.exception(f"STAGING LOAD FAILED: source=postgres dataset={table_cfg.name} run_id={run_id}: {exc}")
-            load_manifests.append(
-                {
-                    "source": "postgres",
-                    "dataset": table_cfg.name,
-                    "run_id": run_id,
-                    "run_ts": run_ts.isoformat(),
-                    "status": "failed",
-                    "record_count": 0,
-                    "processed_paths": [],
-                    "error_message": str(exc),
-                }
-            )
+            load_manifests.append(_failed_manifest(spec, run_id=run_id, run_ts=run_ts, error_message=str(exc)))
 
-    return {"manifests": load_manifests, "loaded_rows": loaded_rows, "loaded_tables": loaded_tables}
+    return PostgresLoadResult(manifests=load_manifests, loaded_rows=loaded_rows, loaded_tables=loaded_tables)
 
 
 @timed_run
@@ -218,44 +255,31 @@ def load_file_manifests_to_staging(
     conn,
     run_id: str,
     run_ts: datetime,
-    marketing_manifest: dict[str, Any] | None = None,
-    web_logs_manifest: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    hints = {
-        "marketing_leads": (marketing_manifest or {}).get("processed_paths", []),
-        "webserver_logs": (web_logs_manifest or {}).get("processed_paths", []),
-    }
-    dataset_order = ["marketing_leads", "webserver_logs"]
-    manifests: dict[str, dict[str, Any]] = {}
+    file_manifests: dict[str, RunManifest] | None = None,
+) -> FileLoadResult:
+    file_manifests = file_manifests or {}
+    hints = {dataset_key: manifest.processed_paths for dataset_key, manifest in file_manifests.items()}
+    manifests: dict[str, RunManifest] = {}
     loaded_rows = 0
     loaded_tables: list[str] = []
 
-    for dataset_key in dataset_order:
-        spec = FILE_LOAD_SPECS[dataset_key]
+    for dataset_key, spec in FILE_LOAD_SPECS.items():
+        hinted_paths = hints.get(dataset_key, [])
         try:
             manifest = _load_dataset(
                 conn,
                 spec=spec,
                 run_id=run_id,
                 run_ts=run_ts,
-                hinted_paths=hints[dataset_key],
+                hinted_paths=hinted_paths,
             )
             manifests[dataset_key] = manifest
-            loaded_rows += int(manifest.get("record_count", 0))
+            loaded_rows += manifest.record_count
             loaded_tables.extend([target.table for target in spec.targets])
         except Exception as exc:
             logger.exception(
                 f"STAGING LOAD FAILED: source={spec.source} dataset={spec.dataset} run_id={run_id}: {exc}"
             )
-            manifests[dataset_key] = {
-                "source": spec.source,
-                "dataset": spec.dataset,
-                "run_id": run_id,
-                "run_ts": run_ts.isoformat(),
-                "status": "failed",
-                "record_count": 0,
-                "processed_paths": [],
-                "error_message": str(exc),
-            }
+            manifests[dataset_key] = _failed_manifest(spec, run_id=run_id, run_ts=run_ts, error_message=str(exc))
 
-    return {"manifests": manifests, "loaded_rows": loaded_rows, "loaded_tables": loaded_tables}
+    return FileLoadResult(manifests=manifests, loaded_rows=loaded_rows, loaded_tables=loaded_tables)

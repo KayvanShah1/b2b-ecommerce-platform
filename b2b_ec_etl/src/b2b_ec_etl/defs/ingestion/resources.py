@@ -1,26 +1,29 @@
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
+from b2b_ec_pipeline.ingestion import (
+    POSTGRES_TABLE_CONFIGS,
+    extract_postgres_table_to_raw,
+    ingest_file_source_to_raw,
+    load_file_manifests_to_staging,
+    load_postgres_manifests_to_staging,
+    process_file_dataset_to_processed,
+    process_postgres_dataset_to_processed,
+)
+from b2b_ec_pipeline.ingestion.models import (
+    FILE_PROCESS_SPECS,
+    FILE_RAW_CAPTURE_SPECS,
+    FileLoadResult,
+    LoadBundle,
+    ManifestBundle,
+    PostgresLoadResult,
+)
+from b2b_ec_pipeline.state import RunManifest, Watermark, state_manager, state_resolver
 from b2b_ec_utils import settings
 from b2b_ec_utils.logger import get_logger
 from dagster import ConfigurableResource
 from dagster_duckdb import DuckDBResource
 from pydantic import Field
-
-from b2b_ec_etl.defs.ingestion.core import (
-    POSTGRES_TABLE_CONFIGS,
-    extract_postgres_table_to_raw,
-    ingest_marketing_leads_to_raw,
-    ingest_web_logs_to_raw,
-    load_file_manifests_to_staging,
-    load_postgres_manifests_to_staging,
-    process_marketing_to_processed,
-    process_postgres_dataset_to_processed,
-    process_web_logs_to_processed,
-)
-from b2b_ec_etl.defs.ingestion.core.models import Watermark
-from b2b_ec_etl.defs.ingestion.core.state import state_manager
 
 logger = get_logger("IngestionResource")
 
@@ -28,6 +31,7 @@ logger = get_logger("IngestionResource")
 class IngestionResource(ConfigurableResource):
     include_postgres_tables: list[str] = Field(default_factory=list)
     fail_fast: bool = False
+    enforce_run_coherence: bool = True
 
     def _selected_postgres_configs(self):
         if not self.include_postgres_tables:
@@ -37,21 +41,28 @@ class IngestionResource(ConfigurableResource):
         return tuple(cfg for cfg in POSTGRES_TABLE_CONFIGS if cfg.name in include)
 
     def _failed_manifest(
-        self, source: str, dataset: str, run_id: str, run_ts: datetime, error_message: str
-    ) -> dict[str, Any]:
-        return {
-            "source": source,
-            "dataset": dataset,
-            "run_id": run_id,
-            "run_ts": run_ts.isoformat(),
-            "status": "failed",
-            "record_count": 0,
-            "bad_record_count": 0,
-            "raw_paths": [],
-            "processed_paths": [],
-            "processed_files": [],
-            "error_message": error_message,
-        }
+        self,
+        source: str,
+        dataset: str,
+        stage: str,
+        run_id: str,
+        run_ts: datetime,
+        error_message: str,
+    ) -> RunManifest:
+        return RunManifest(
+            source=source,
+            dataset=dataset,
+            stage=stage,
+            run_id=run_id,
+            run_ts=run_ts,
+            status="failed",
+            record_count=0,
+            bad_record_count=0,
+            raw_paths=[],
+            processed_paths=[],
+            processed_files=[],
+            error_message=error_message,
+        )
 
     def _handle_step_exception(
         self,
@@ -62,60 +73,78 @@ class IngestionResource(ConfigurableResource):
         run_id: str,
         run_ts: datetime,
         exc: Exception,
-    ) -> dict[str, Any]:
+    ) -> RunManifest:
         logger.exception(f"{stage.upper()} FAILED: source={source} dataset={dataset} run_id={run_id}: {exc}")
-        persisted = state_manager.get_run_manifest(run_id=run_id, source=source, dataset=dataset)
+        persisted = state_manager.get_run_manifest(run_id=run_id, source=source, dataset=dataset, stage=stage)
         if persisted is not None:
-            return persisted.model_dump(mode="json")
+            return persisted
         return self._failed_manifest(
             source=source,
             dataset=dataset,
+            stage=stage,
             run_id=run_id,
             run_ts=run_ts,
             error_message=str(exc),
         )
 
-    def _commit_stage_watermarks(self, manifests: list[dict[str, Any]]) -> None:
+    def _commit_stage_watermarks(self, manifests: list[RunManifest]) -> None:
         for manifest in manifests:
-            watermark_payload = manifest.get("watermark_after")
+            watermark_payload = manifest.watermark_after
             if not watermark_payload:
                 continue
             state_manager.put_watermark(Watermark.model_validate(watermark_payload))
 
-    def _latest_manifest_for_stage(self, source: str, dataset: str, stage: str) -> dict[str, Any] | None:
-        watermark = state_manager.get_watermark(source=source, dataset=dataset, stage=stage)
-        if not watermark or not watermark.run_id:
-            return None
-        manifest = state_manager.get_run_manifest(run_id=watermark.run_id, source=source, dataset=dataset)
-        if not manifest:
-            return None
-        if str(manifest.stage) != stage or manifest.status != "completed":
-            return None
-        return manifest.model_dump(mode="json")
+    def _latest_manifest_for_stage(self, source: str, dataset: str, stage: str) -> RunManifest | None:
+        return state_resolver.latest_completed_manifest(source=source, dataset=dataset, stage=stage)
 
-    def _resolve_raw_result(self, raw_result: dict[str, Any] | None) -> dict[str, Any]:
+    def _manifest_run_ids(
+        self,
+        postgres_manifests: list[RunManifest],
+        file_manifests: dict[str, RunManifest],
+    ) -> set[str]:
+        run_ids = {manifest.run_id for manifest in postgres_manifests if manifest.run_id}
+        run_ids.update(manifest.run_id for manifest in file_manifests.values() if manifest.run_id)
+        return run_ids
+
+    def _enforce_run_coherence(
+        self,
+        stage: str,
+        postgres_manifests: list[RunManifest],
+        file_manifests: dict[str, RunManifest],
+    ) -> None:
+        run_ids = self._manifest_run_ids(postgres_manifests, file_manifests)
+        if len(run_ids) <= 1:
+            return
+        message = f"{stage.upper()} RESOLVE: mixed run_ids detected ({len(run_ids)} runs) -> {sorted(run_ids)}"
+        if self.enforce_run_coherence:
+            raise RuntimeError(message)
+        logger.warning(message)
+
+    def _resolve_raw_result(self, raw_result: ManifestBundle | None) -> ManifestBundle:
         if raw_result is not None:
+            self._enforce_run_coherence("process", raw_result.postgres, raw_result.files)
             return raw_result
 
-        postgres_manifests: list[dict[str, Any]] = []
+        postgres_manifests: list[RunManifest] = []
         for table_cfg in self._selected_postgres_configs():
             manifest = self._latest_manifest_for_stage(source="postgres", dataset=table_cfg.name, stage="raw_capture")
             if manifest:
                 postgres_manifests.append(manifest)
 
-        file_manifests: dict[str, dict[str, Any]] = {}
-        for source_name, dataset in [("marketing_leads", "marketing_leads"), ("webserver_logs", "webserver_logs")]:
-            manifest = self._latest_manifest_for_stage(source=source_name, dataset=dataset, stage="raw_capture")
+        file_manifests: dict[str, RunManifest] = {}
+        for dataset_key, spec in FILE_RAW_CAPTURE_SPECS.items():
+            manifest = self._latest_manifest_for_stage(source=spec.source, dataset=spec.dataset, stage="raw_capture")
             if manifest:
-                file_manifests[source_name] = manifest
+                file_manifests[dataset_key] = manifest
 
-        return {"postgres": postgres_manifests, "files": file_manifests}
+        self._enforce_run_coherence("process", postgres_manifests, file_manifests)
+        return ManifestBundle(postgres=postgres_manifests, files=file_manifests)
 
     def _resolve_process_manifests(
         self,
-        postgres_manifests: list[dict[str, Any]] | None,
-        file_manifests: dict[str, dict[str, Any]] | None,
-    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        postgres_manifests: list[RunManifest] | None,
+        file_manifests: dict[str, RunManifest] | None,
+    ) -> tuple[list[RunManifest], dict[str, RunManifest]]:
         logger.info("LOAD RESOLVE: resolving process manifests")
         if postgres_manifests is None:
             postgres_manifests = []
@@ -125,7 +154,7 @@ class IngestionResource(ConfigurableResource):
                     postgres_manifests.append(manifest)
                     logger.info(
                         f"LOAD RESOLVE: source=postgres dataset={table_cfg.name} "
-                        f"manifest_run_id={manifest.get('run_id')} status={manifest.get('status')}"
+                        f"manifest_run_id={manifest.run_id} status={manifest.status}"
                     )
                 else:
                     logger.warning(
@@ -134,26 +163,37 @@ class IngestionResource(ConfigurableResource):
 
         if file_manifests is None:
             file_manifests = {}
-            for source_name, dataset in [("marketing_leads", "marketing_leads"), ("webserver_logs", "webserver_logs")]:
-                manifest = self._latest_manifest_for_stage(source=source_name, dataset=dataset, stage="process")
+            for dataset_key, spec in FILE_PROCESS_SPECS.items():
+                manifest = self._latest_manifest_for_stage(source=spec.source, dataset=spec.dataset, stage="process")
                 if manifest:
-                    file_manifests[source_name] = manifest
+                    file_manifests[dataset_key] = manifest
                     logger.info(
-                        f"LOAD RESOLVE: source={source_name} dataset={dataset} "
-                        f"manifest_run_id={manifest.get('run_id')} status={manifest.get('status')}"
+                        f"LOAD RESOLVE: source={spec.source} dataset={spec.dataset} "
+                        f"manifest_run_id={manifest.run_id} status={manifest.status}"
                     )
                 else:
                     logger.warning(
-                        f"LOAD RESOLVE: source={source_name} dataset={dataset} no completed process manifest"
+                        f"LOAD RESOLVE: source={spec.source} dataset={spec.dataset} no completed process manifest"
                     )
 
+        self._enforce_run_coherence("load", postgres_manifests, file_manifests)
         return postgres_manifests, file_manifests
+
+    def resolved_run_id(
+        self,
+        postgres_manifests: list[RunManifest],
+        file_manifests: dict[str, RunManifest],
+    ) -> str | None:
+        run_ids = self._manifest_run_ids(postgres_manifests, file_manifests)
+        if len(run_ids) != 1:
+            return None
+        return next(iter(run_ids))
 
     def resolve_process_manifests(
         self,
-        postgres_manifests: list[dict[str, Any]] | None = None,
-        file_manifests: dict[str, dict[str, Any]] | None = None,
-    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        postgres_manifests: list[RunManifest] | None = None,
+        file_manifests: dict[str, RunManifest] | None = None,
+    ) -> tuple[list[RunManifest], dict[str, RunManifest]]:
         return self._resolve_process_manifests(postgres_manifests, file_manifests)
 
     def raw_capture_postgres(
@@ -161,8 +201,8 @@ class IngestionResource(ConfigurableResource):
         run_id: str,
         run_ts: datetime,
         commit_watermarks: bool = True,
-    ) -> list[dict[str, Any]]:
-        manifests: list[dict[str, Any]] = []
+    ) -> list[RunManifest]:
+        manifests: list[RunManifest] = []
         for table_cfg in self._selected_postgres_configs():
             try:
                 manifests.append(extract_postgres_table_to_raw(table_cfg, run_id=run_id, run_ts=run_ts))
@@ -188,36 +228,27 @@ class IngestionResource(ConfigurableResource):
         run_id: str,
         run_ts: datetime,
         commit_watermarks: bool = True,
-    ) -> dict[str, dict[str, Any]]:
-        try:
-            marketing_manifest = ingest_marketing_leads_to_raw(run_id=run_id, run_ts=run_ts)
-        except Exception as exc:
-            marketing_manifest = self._handle_step_exception(
-                stage="raw_capture",
-                source="marketing_leads",
-                dataset="marketing_leads",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
+    ) -> dict[str, RunManifest]:
+        manifests: dict[str, RunManifest] = {}
+        for dataset_key, spec in FILE_RAW_CAPTURE_SPECS.items():
+            try:
+                manifests[dataset_key] = ingest_file_source_to_raw(
+                    dataset_key=dataset_key,
+                    run_id=run_id,
+                    run_ts=run_ts,
+                )
+            except Exception as exc:
+                manifests[dataset_key] = self._handle_step_exception(
+                    stage="raw_capture",
+                    source=spec.source,
+                    dataset=spec.dataset,
+                    run_id=run_id,
+                    run_ts=run_ts,
+                    exc=exc,
+                )
+                if self.fail_fast:
+                    raise
 
-        try:
-            web_logs_manifest = ingest_web_logs_to_raw(run_id=run_id, run_ts=run_ts)
-        except Exception as exc:
-            web_logs_manifest = self._handle_step_exception(
-                stage="raw_capture",
-                source="webserver_logs",
-                dataset="webserver_logs",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
-
-        manifests = {"marketing_leads": marketing_manifest, "webserver_logs": web_logs_manifest}
         if commit_watermarks:
             self._commit_stage_watermarks(list(manifests.values()))
         return manifests
@@ -227,32 +258,33 @@ class IngestionResource(ConfigurableResource):
         run_id: str,
         run_ts: datetime,
         commit_watermarks: bool = True,
-    ) -> dict[str, Any]:
+    ) -> ManifestBundle:
         # Avoid duplicate commits by delegating commit only in this method.
         postgres_manifests = self.raw_capture_postgres(run_id=run_id, run_ts=run_ts, commit_watermarks=False)
         file_manifests = self.raw_capture_files(run_id=run_id, run_ts=run_ts, commit_watermarks=False)
         if commit_watermarks:
             self._commit_stage_watermarks(postgres_manifests + list(file_manifests.values()))
-        return {"postgres": postgres_manifests, "files": file_manifests}
+        return ManifestBundle(postgres=postgres_manifests, files=file_manifests)
 
     def process_postgres_manifests(
         self,
         run_id: str,
         run_ts: datetime,
-        raw_manifests: list[dict[str, Any]] | None = None,
+        raw_manifests: list[RunManifest] | None = None,
         commit_watermarks: bool = True,
-    ) -> list[dict[str, Any]]:
-        raw_manifest_by_dataset = {manifest["dataset"]: manifest for manifest in (raw_manifests or [])}
-        processed_manifests: list[dict[str, Any]] = []
+    ) -> list[RunManifest]:
+        raw_manifest_by_dataset = {manifest.dataset: manifest for manifest in (raw_manifests or [])}
+        processed_manifests: list[RunManifest] = []
 
         for table_cfg in self._selected_postgres_configs():
+            raw_manifest = raw_manifest_by_dataset.get(table_cfg.name)
             try:
                 processed_manifests.append(
                     process_postgres_dataset_to_processed(
                         table_cfg=table_cfg,
                         run_id=run_id,
                         run_ts=run_ts,
-                        hint_raw_paths=(raw_manifest_by_dataset.get(table_cfg.name) or {}).get("raw_paths", []),
+                        hint_raw_paths=raw_manifest.raw_paths if raw_manifest else [],
                     )
                 )
             except Exception as exc:
@@ -277,46 +309,33 @@ class IngestionResource(ConfigurableResource):
         self,
         run_id: str,
         run_ts: datetime,
-        raw_file_manifests: dict[str, dict[str, Any]] | None = None,
+        raw_file_manifests: dict[str, RunManifest] | None = None,
         commit_watermarks: bool = True,
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, RunManifest]:
         raw_file_manifests = raw_file_manifests or {}
-        try:
-            marketing_manifest = process_marketing_to_processed(
-                run_id=run_id,
-                run_ts=run_ts,
-                hint_raw_paths=(raw_file_manifests.get("marketing_leads") or {}).get("raw_paths", []),
-            )
-        except Exception as exc:
-            marketing_manifest = self._handle_step_exception(
-                stage="process",
-                source="marketing_leads",
-                dataset="marketing_leads",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
+        manifests: dict[str, RunManifest] = {}
+        for dataset_key, spec in FILE_PROCESS_SPECS.items():
+            raw_manifest = raw_file_manifests.get(dataset_key)
+            hint_raw_paths = raw_manifest.raw_paths if raw_manifest else []
+            try:
+                manifests[dataset_key] = process_file_dataset_to_processed(
+                    dataset_key=dataset_key,
+                    run_id=run_id,
+                    run_ts=run_ts,
+                    hint_raw_paths=hint_raw_paths,
+                )
+            except Exception as exc:
+                manifests[dataset_key] = self._handle_step_exception(
+                    stage="process",
+                    source=spec.source,
+                    dataset=spec.dataset,
+                    run_id=run_id,
+                    run_ts=run_ts,
+                    exc=exc,
+                )
+                if self.fail_fast:
+                    raise
 
-        try:
-            web_logs_manifest = process_web_logs_to_processed(
-                run_id=run_id,
-                run_ts=run_ts,
-                hint_raw_paths=(raw_file_manifests.get("webserver_logs") or {}).get("raw_paths", []),
-            )
-        except Exception as exc:
-            web_logs_manifest = self._handle_step_exception(
-                stage="process",
-                source="webserver_logs",
-                dataset="webserver_logs",
-                run_id=run_id,
-                run_ts=run_ts,
-                exc=exc,
-            )
-            if self.fail_fast:
-                raise
-        manifests = {"marketing_leads": marketing_manifest, "webserver_logs": web_logs_manifest}
         if commit_watermarks:
             self._commit_stage_watermarks(list(manifests.values()))
         return manifests
@@ -325,35 +344,35 @@ class IngestionResource(ConfigurableResource):
         self,
         run_id: str,
         run_ts: datetime,
-        raw_result: dict[str, Any] | None = None,
+        raw_result: ManifestBundle | None = None,
         commit_watermarks: bool = True,
-    ) -> dict[str, Any]:
+    ) -> ManifestBundle:
         resolved_raw_result = self._resolve_raw_result(raw_result)
         postgres_manifests = self.process_postgres_manifests(
             run_id=run_id,
             run_ts=run_ts,
-            raw_manifests=resolved_raw_result.get("postgres", []),
+            raw_manifests=resolved_raw_result.postgres,
             commit_watermarks=False,
         )
         file_manifests = self.process_file_manifests(
             run_id=run_id,
             run_ts=run_ts,
-            raw_file_manifests=resolved_raw_result.get("files", {}),
+            raw_file_manifests=resolved_raw_result.files,
             commit_watermarks=False,
         )
         if commit_watermarks:
             self._commit_stage_watermarks(postgres_manifests + list(file_manifests.values()))
-        return {"postgres": postgres_manifests, "files": file_manifests}
+        return ManifestBundle(postgres=postgres_manifests, files=file_manifests)
 
     def load_all_to_staging(
         self,
         conn,
         run_id: str,
         run_ts: datetime,
-        postgres_manifests: list[dict[str, Any]] | None = None,
-        file_manifests: dict[str, dict[str, Any]] | None = None,
+        postgres_manifests: list[RunManifest] | None = None,
+        file_manifests: dict[str, RunManifest] | None = None,
         commit_watermarks: bool = True,
-    ) -> dict[str, Any]:
+    ) -> LoadBundle:
         logger.info(f"LOAD START: run_id={run_id}")
         postgres_manifests, file_manifests = self._resolve_process_manifests(postgres_manifests, file_manifests)
         logger.info(
@@ -362,10 +381,7 @@ class IngestionResource(ConfigurableResource):
         )
         if not postgres_manifests and not file_manifests:
             logger.warning(f"LOAD SKIP: run_id={run_id} no process manifests available")
-            return {
-                "postgres": {"manifests": [], "loaded_rows": 0, "loaded_tables": []},
-                "files": {"manifests": {}, "loaded_rows": 0, "loaded_tables": []},
-            }
+            return LoadBundle(postgres=PostgresLoadResult(), files=FileLoadResult())
         selected_cfgs = self._selected_postgres_configs()
         postgres_result = load_postgres_manifests_to_staging(
             conn,
@@ -378,19 +394,18 @@ class IngestionResource(ConfigurableResource):
             conn,
             run_id=run_id,
             run_ts=run_ts,
-            marketing_manifest=file_manifests.get("marketing_leads"),
-            web_logs_manifest=file_manifests.get("webserver_logs"),
+            file_manifests=file_manifests,
         )
 
         if commit_watermarks:
-            self._commit_stage_watermarks(postgres_result.get("manifests", []))
-            self._commit_stage_watermarks(list(files_result.get("manifests", {}).values()))
+            self._commit_stage_watermarks(postgres_result.manifests)
+            self._commit_stage_watermarks(list(files_result.manifests.values()))
 
         logger.info(
-            f"LOAD COMPLETE: run_id={run_id} postgres_loaded_rows={postgres_result.get('loaded_rows', 0)} "
-            f"file_loaded_rows={files_result.get('loaded_rows', 0)}"
+            f"LOAD COMPLETE: run_id={run_id} postgres_loaded_rows={postgres_result.loaded_rows} "
+            f"file_loaded_rows={files_result.loaded_rows}"
         )
-        return {"postgres": postgres_result, "files": files_result}
+        return LoadBundle(postgres=postgres_result, files=files_result)
 
 
 def _resolve_local_duckdb_path() -> str:

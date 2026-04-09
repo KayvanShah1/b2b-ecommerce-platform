@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import duckdb
+from b2b_ec_pipeline.ingestion.models import FileLoadResult, LoadBundle, PostgresLoadResult
 from b2b_ec_utils.logger import get_logger
 from b2b_ec_utils.timer import timed_run
 
@@ -21,13 +21,17 @@ def _safe_db_uri(uri: str) -> str:
 
 
 @timed_run
-def run_load_only(run_id: str | None = None) -> dict[str, Any]:
+def run_load_only(run_id: str | None = None) -> dict[str, object]:
     run_ts = datetime.now(timezone.utc)
-    effective_run_id = run_id or f"manual-load-{run_ts.strftime('%Y%m%dT%H%M%S')}"
-    logger.info(f"LOAD ONLY START: run_id={effective_run_id}")
+    default_run_id = f"manual-load-{run_ts.strftime('%Y%m%dT%H%M%S')}"
 
     resource = IngestionResource()
     postgres_manifests, file_manifests = resource.resolve_process_manifests()
+    resolved_run_id = resource.resolved_run_id(postgres_manifests, file_manifests)
+    effective_run_id = run_id or resolved_run_id or default_run_id
+    logger.info(f"LOAD ONLY START: run_id={effective_run_id}")
+    if run_id is None and resolved_run_id:
+        logger.info(f"LOAD ONLY RUN_ID: using resolved process run_id={resolved_run_id}")
     logger.info(
         f"LOAD ONLY MANIFESTS: run_id={effective_run_id} "
         f"postgres={len(postgres_manifests)} files={len(file_manifests)}"
@@ -37,10 +41,7 @@ def run_load_only(run_id: str | None = None) -> dict[str, Any]:
         logger.warning(f"LOAD ONLY SKIP: run_id={effective_run_id} no process manifests found")
         return {
             "run_id": effective_run_id,
-            "load": {
-                "postgres": {"manifests": [], "loaded_rows": 0, "loaded_tables": []},
-                "files": {"manifests": {}, "loaded_rows": 0, "loaded_tables": []},
-            },
+            "load": LoadBundle(postgres=PostgresLoadResult(), files=FileLoadResult()),
         }
 
     # Keep runner simple: always use configured warehouse target (MotherDuck when token is configured).
@@ -59,8 +60,8 @@ def run_load_only(run_id: str | None = None) -> dict[str, Any]:
             file_manifests=file_manifests,
         )
 
-    postgres_rows = result["postgres"]["loaded_rows"]
-    file_rows = result["files"]["loaded_rows"]
+    postgres_rows = result.postgres.loaded_rows
+    file_rows = result.files.loaded_rows
     logger.info(
         f"LOAD ONLY COMPLETE: run_id={effective_run_id} "
         f"postgres_loaded_rows={postgres_rows} file_loaded_rows={file_rows}"

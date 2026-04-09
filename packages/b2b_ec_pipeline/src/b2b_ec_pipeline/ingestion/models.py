@@ -1,18 +1,11 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-ExtractMode = Literal["full_snapshot", "incremental_timestamp", "incremental_id"]
-IngestionSource = Literal["postgres", "marketing_leads", "webserver_logs"]
-IngestionStage = Literal["raw_capture", "process", "load"]
-RunStatus = Literal["started", "completed", "failed"]
-
-
-class IngestionModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+from b2b_ec_pipeline.state.models import ExtractMode, IngestionModel, IngestionSource, RunManifest
 
 
 ######################################
@@ -151,69 +144,6 @@ FILE_SOURCE_SCHEMAS: dict[str, type[IngestionModel]] = {
 }
 
 
-#######################################
-# State Management Models
-#######################################
-class Watermark(IngestionModel):
-    source: IngestionSource | str
-    dataset: str
-    stage: IngestionStage | None = None
-    mode: ExtractMode | Literal["file_incremental", "snapshot"] | None = None
-    watermark_column: str | None = None
-    value: str | int | float | datetime | None = None
-    last_file: str | None = None
-    last_line: int | None = None
-    processed_files_count: int | None = None
-    updated_at: datetime
-    run_id: str
-
-
-class IngestionCheckpoint(IngestionModel):
-    source: IngestionSource | str
-    dataset: str
-    stage: IngestionStage
-    run_id: str
-    checkpoint_name: str
-    checkpoint_value: str | int | float | datetime | None = None
-    updated_at: datetime
-
-
-class RunManifest(IngestionModel):
-    source: IngestionSource | str
-    dataset: str
-    stage: IngestionStage | None = None
-    run_id: str
-    run_ts: datetime
-    status: RunStatus
-    record_count: int = 0
-    processed_files: list[str] = Field(default_factory=list)
-    raw_paths: list[str] = Field(default_factory=list)
-    processed_paths: list[str] = Field(default_factory=list)
-    bad_record_count: int = 0
-    watermark_before: dict[str, Any] = Field(default_factory=dict)
-    watermark_after: dict[str, Any] = Field(default_factory=dict)
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    failed_at: datetime | None = None
-    error_message: str | None = None
-
-
-class SchemaColumnSnapshot(IngestionModel):
-    name: str
-    dtype: str
-    nullable: bool = True
-
-
-class DatasetSchemaSnapshot(IngestionModel):
-    source: IngestionSource | str
-    dataset: str
-    stage: IngestionStage
-    run_id: str
-    captured_at: datetime
-    columns: list[SchemaColumnSnapshot] = Field(default_factory=list)
-    row_count: int | None = None
-
-
 ############################################################
 # Process/Load Config Models
 ############################################################
@@ -223,6 +153,7 @@ class ProcessDatasetSpec(IngestionModel):
     model_key: str
     dedupe_keys: tuple[str, ...] = ()
     dedupe_sort_column: str | None = None
+    dedupe_scope: Literal["file", "dataset"] = "file"
     preprocess: Literal["marketing_leads", "webserver_logs"] | None = None
 
 
@@ -244,6 +175,28 @@ class RawFileCaptureSpec(IngestionModel):
     dataset: str
     pattern_keys: tuple[Literal["marketing_csv", "web_logs_seed_jsonl", "web_logs_daily_jsonl"], ...]
     loader: Literal["marketing_csv", "web_logs_jsonl"]
+
+
+class ManifestBundle(IngestionModel):
+    postgres: list[RunManifest] = Field(default_factory=list)
+    files: dict[str, RunManifest] = Field(default_factory=dict)
+
+
+class PostgresLoadResult(IngestionModel):
+    manifests: list[RunManifest] = Field(default_factory=list)
+    loaded_rows: int = 0
+    loaded_tables: list[str] = Field(default_factory=list)
+
+
+class FileLoadResult(IngestionModel):
+    manifests: dict[str, RunManifest] = Field(default_factory=dict)
+    loaded_rows: int = 0
+    loaded_tables: list[str] = Field(default_factory=list)
+
+
+class LoadBundle(IngestionModel):
+    postgres: PostgresLoadResult
+    files: FileLoadResult
 
 
 ################################################
@@ -288,6 +241,7 @@ FILE_PROCESS_SPECS: dict[str, ProcessDatasetSpec] = {
         model_key="marketing_leads",
         dedupe_keys=("lead_id",),
         dedupe_sort_column="status_updated_at",
+        dedupe_scope="dataset",
         preprocess="marketing_leads",
     ),
     "webserver_logs": ProcessDatasetSpec(

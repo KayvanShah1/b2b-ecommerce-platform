@@ -10,6 +10,7 @@ sys.path.append(str(settings.project_root / "scripts"))
 
 from reset.reset_minio import reset_minio_buckets
 from reset.reset_motherduck import reset_motherduck_schemas
+from reset.reset_ingestion_metadata import reset_ingestion_metadata
 from reset.reset_postgres import reset_postgres_database
 
 console = Console()
@@ -32,6 +33,7 @@ def reset_all(motherduck_schemas_to_delete, buckets_to_empty) -> None:
         return
 
     reset_postgres_database()
+    reset_ingestion_metadata(stages=["raw_capture", "process", "load"], recreate_schema=True)
     reset_minio_buckets(buckets=buckets_to_empty)
     reset_motherduck_schemas(motherduck_schemas_to_delete)
     console.print("[bold green]All reset steps completed.[/bold green]")

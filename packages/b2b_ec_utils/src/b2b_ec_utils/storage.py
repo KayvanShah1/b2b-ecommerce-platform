@@ -61,32 +61,32 @@ class Storage:
         folder = cfg.datasets.webserver_logs_seed_prefix if is_seed else cfg.datasets.webserver_logs_daily_prefix
         return self.get_path(cfg.webserver_logs_bucket, folder, *parts)
 
-    def get_raw_dataset_path(self, dataset: str, *parts: str) -> str:
+    def get_raw_dataset_path(self, source_key: str, *parts: str) -> str:
         cfg = self.cfg.storage
-        dataset_map = {
+        source_map = {
             "postgres": cfg.datasets.raw_postgres_prefix,
             "marketing_leads": cfg.datasets.raw_marketing_leads_prefix,
             "webserver_logs": cfg.datasets.raw_webserver_logs_prefix,
         }
-        if dataset not in dataset_map:
-            raise ValueError(f"Unknown raw dataset '{dataset}'")
+        if source_key not in source_map:
+            raise ValueError(f"Unknown raw source '{source_key}'")
 
-        return self.get_path(cfg.raw_data_bucket, cfg.datasets.ingestion_raw_root_prefix, dataset_map[dataset], *parts)
+        return self.get_path(cfg.raw_data_bucket, cfg.datasets.ingestion_raw_root_prefix, source_map[source_key], *parts)
 
-    def get_processed_dataset_path(self, dataset: str, *parts: str) -> str:
+    def get_processed_dataset_path(self, source_key: str, *parts: str) -> str:
         cfg = self.cfg.storage
-        dataset_map = {
+        source_map = {
             "postgres": cfg.datasets.processed_postgres_prefix,
             "marketing_leads": cfg.datasets.processed_marketing_leads_prefix,
             "webserver_logs": cfg.datasets.processed_webserver_logs_prefix,
         }
-        if dataset not in dataset_map:
-            raise ValueError(f"Unknown processed dataset '{dataset}'")
+        if source_key not in source_map:
+            raise ValueError(f"Unknown processed source '{source_key}'")
 
         return self.get_path(
             cfg.processed_data_bucket,
             cfg.datasets.ingestion_processed_root_prefix,
-            dataset_map[dataset],
+            source_map[source_key],
             *parts,
         )
 
