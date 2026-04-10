@@ -32,6 +32,7 @@ What it is capable of:
 ![Pydantic](https://img.shields.io/badge/Pydantic-E92063?style=for-the-badge&logo=pydantic&logoColor=white)
 ![fsspec](https://img.shields.io/badge/fsspec-0EA5E9?style=for-the-badge&logo=python&logoColor=white)
 ![uv](https://img.shields.io/badge/uv-6A5ACD?style=for-the-badge&logo=python&logoColor=white)
+![pulumi](https://img.shields.io/badge/Pulumi-8A3391?style=for-the-badge&logo=pulumi&logoColor=white)
 
 ## Repository Components
 | Component | Path | Purpose |
