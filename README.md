@@ -7,6 +7,8 @@ Monorepo for synthetic source generation, ETL orchestration, and analytics model
 
 This project is a full data platform simulation for B2B ecommerce operations. It is designed to model how production-grade data systems behave over time: sources evolve, data is ingested incrementally, and analytics models are rebuilt reliably for reporting and decision support.
 
+![Banner Illustration](docs/img/online_shopping_2.jpg)
+
 Core purpose:
 1. Provide realistic, reusable B2B datasets.
 2. Demonstrate end-to-end data engineering patterns in one codebase.
