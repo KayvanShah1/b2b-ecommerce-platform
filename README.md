@@ -22,19 +22,20 @@ What it is capable of:
 5. Supports orchestration-first execution via Dagster and script-level execution for debugging.
 
 ## Tech Stack
-![Dagster](https://img.shields.io/badge/Dagster-000000?style=for-the-badge&logo=dagster&logoColor=white)
-![dbt](https://img.shields.io/badge/dbt-FF694B?style=for-the-badge&logo=dbt&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Polars](https://img.shields.io/badge/Polars-4B8BBE?style=for-the-badge&logo=python&logoColor=white)
 ![SQL](https://img.shields.io/badge/SQL-336791?style=for-the-badge&logo=databricks&logoColor=white)
 ![DuckDB](https://img.shields.io/badge/DuckDB-FFF000?style=for-the-badge&logo=duckdb&logoColor=black)
 ![MotherDuck](https://img.shields.io/badge/MotherDuck-1F1F1F?style=for-the-badge&logo=motherduck&logoColor=yellow)
-![MinIO](https://img.shields.io/badge/MinIO-C72E49?style=for-the-badge&logo=minio&logoColor=white)
-![Polars](https://img.shields.io/badge/Polars-4B8BBE?style=for-the-badge&logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
 ![Pydantic](https://img.shields.io/badge/Pydantic-E92063?style=for-the-badge&logo=pydantic&logoColor=white)
 ![fsspec](https://img.shields.io/badge/fsspec-0EA5E9?style=for-the-badge&logo=python&logoColor=white)
+![MinIO](https://img.shields.io/badge/MinIO-C72E49?style=for-the-badge&logo=minio&logoColor=white)
+![Dagster](https://img.shields.io/badge/Dagster-000000?style=for-the-badge&logo=dagster&logoColor=white)
+![dbt](https://img.shields.io/badge/dbt-FF694B?style=for-the-badge&logo=dbt&logoColor=white)
 ![uv](https://img.shields.io/badge/uv-6A5ACD?style=for-the-badge&logo=python&logoColor=white)
 ![pulumi](https://img.shields.io/badge/Pulumi-8A3391?style=for-the-badge&logo=pulumi&logoColor=white)
+![aws](https://img.shields.io/badge/Amazon%20Web%20Services-%23FF9900.svg?style=for-the-badge&logo=amazon-aws&logoColor=white)
 
 ## Repository Components
 | Component | Path | Purpose |
