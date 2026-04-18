@@ -28,12 +28,12 @@ else:
 
 # 3. Create the Bucket using the name defined in your settings
 # This ensures Pulumi and your App always agree on the bucket name
-webserlog_landing_bucket = aws.s3.BucketV2(
+webserver_logs_landing_bucket = aws.s3.BucketV2(
     "landing-zone-bucket",
-    bucket=settings.storage.webserlog_bucket,
+    bucket=settings.storage.webserver_logs_bucket,
     opts=pulumi.ResourceOptions(provider=custom_provider),
 )
 
 # Export for visibility in the Pulumi CLI
 pulumi.export("bucket_endpoint", settings.storage.endpoint_url)
-pulumi.export("active_bucket", webserlog_landing_bucket.bucket)
+pulumi.export("active_bucket", webserver_logs_landing_bucket.bucket)

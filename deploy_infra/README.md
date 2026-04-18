@@ -1,92 +1,38 @@
- # AWS Python S3 Bucket Pulumi Template
+# `deploy_infra` (Pulumi)
 
- A minimal Pulumi template for provisioning a single AWS S3 bucket using Python.
+Pulumi program that provisions the S3-compatible bucket used as the landing zone for the platform's webserver logs.
 
- ## Overview
+## What it creates
+- One bucket named `"<STORAGE_PREFIX>-webserver-logs"` (default: `b2b-ec-webserver-logs`)
+- Pulumi outputs:
+  - `bucket_endpoint` (from `STORAGE_*_ENDPOINT_URL`)
+  - `active_bucket` (the created bucket name)
 
- This template provisions an S3 bucket (`pulumi_aws.s3.BucketV2`) in your AWS account and exports its ID as an output. It’s an ideal starting point when:
-  - You want to learn Pulumi with AWS in Python.
-  - You need a barebones S3 bucket deployment to build upon.
-  - You prefer a minimal template without extra dependencies.
+## Modes
+- `STORAGE_LOCATION=minio` or `local`: uses a custom AWS provider pointing at your MinIO endpoint
+- `STORAGE_LOCATION=s3`: uses the default AWS provider (real S3)
 
- ## Prerequisites
+## Prerequisites
+- Pulumi CLI installed and logged in
+- Workspace deps installed (`uv sync --all-packages`)
+- Repo-root `.env` configured:
+  - `STORAGE_LOCATION`
+  - `STORAGE_PREFIX` (optional)
+  - MinIO: `STORAGE_MINIO_ENDPOINT_URL`, `STORAGE_MINIO_ROOT_USER`, `STORAGE_MINIO_ROOT_PASSWORD`
+  - AWS: standard AWS credentials for the CLI/SDK (plus `STORAGE_REGION` if you want a non-default region)
 
- - An AWS account with permissions to create S3 buckets.
- - AWS credentials configured in your environment (for example via AWS CLI or environment variables).
- - Python 3.6 or later installed.
- - Pulumi CLI already installed and logged in.
+## Run
 
- ## Getting Started
+```bash
+# from repo root
+uv sync --all-packages
 
- 1. Generate a new project from this template:
-    ```bash
-    pulumi new aws-python
-    ```
- 2. Follow the prompts to set your project name and AWS region (default: `us-east-1`).
- 3. Change into your project directory:
-    ```bash
-    cd <project-name>
-    ```
- 4. Preview the planned changes:
-    ```bash
-    pulumi preview
-    ```
- 5. Deploy the stack:
-    ```bash
-    pulumi up
-    ```
- 6. Tear down when finished:
-    ```bash
-    pulumi destroy
-    ```
+cd deploy_infra
 
- ## Project Layout
+pulumi stack select dev || pulumi stack init dev
+pulumi up
+```
 
- After running `pulumi new`, your directory will look like:
- ```
- ├── __main__.py         # Entry point of the Pulumi program
- ├── Pulumi.yaml         # Project metadata and template configuration
- ├── requirements.txt    # Python dependencies
- └── Pulumi.<stack>.yaml # Stack-specific configuration (e.g., Pulumi.dev.yaml)
- ```
-
- ## Configuration
-
- This template defines the following config value:
-
- - `aws:region` (string)
-   The AWS region to deploy resources into.
-   Default: `us-east-1`
-
- View or update configuration with:
- ```bash
- pulumi config get aws:region
- pulumi config set aws:region us-west-2
- ```
-
- ## Outputs
-
- Once deployed, the stack exports:
-
- - `bucket_name` — the ID of the created S3 bucket.
-
- Retrieve outputs with:
- ```bash
- pulumi stack output bucket_name
- ```
-
- ## Next Steps
-
- - Customize `__main__.py` to add or configure additional resources.
- - Explore the Pulumi AWS SDK: https://www.pulumi.com/registry/packages/aws/
- - Break your infrastructure into modules for better organization.
- - Integrate into CI/CD pipelines for automated deployments.
-
- ## Help and Community
-
- If you have questions or need assistance:
- - Pulumi Documentation: https://www.pulumi.com/docs/
- - Community Slack: https://slack.pulumi.com/
- - GitHub Issues: https://github.com/pulumi/pulumi/issues
-
- Contributions and feedback are always welcome!
+## Notes
+- Bucket naming and endpoints are derived from `b2b_ec_utils.settings` and your `.env`.
+- This module currently provisions only the webserver logs bucket (see `deploy_infra/__main__.py`).

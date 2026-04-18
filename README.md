@@ -41,9 +41,11 @@ What it is capable of:
 | Component | Path | Purpose |
 | --- | --- | --- |
 | Source Generators | `packages/b2b_ec_sources` | Generates synthetic source data (Postgres baseline, marketing leads CSV, webserver logs JSONL). |
+| Core Pipeline | `packages/b2b_ec_pipeline` | Orchestrator-agnostic ingestion pipeline (raw/process/load, state, and metadata primitives). |
 | ETL Orchestration | `b2b_ec_etl` | Runs Dagster jobs for ingestion (`raw -> process -> load`) and analytics execution. |
 | Warehouse Models | `b2b_ec_warehouse` | dbt project with `staging` and `marts` models (dimensions and facts). |
 | Shared Utilities | `packages/b2b_ec_utils` | Common settings, storage abstraction, logging, and timing utilities. |
+| Infrastructure | `deploy_infra` | Pulumi project for provisioning S3/MinIO buckets used by the platform. |
 
 ## End-to-End Architecture
 
@@ -138,4 +140,14 @@ uv run python packages/b2b_ec_utils/src/b2b_ec_utils/storage.py
 2. [ETL Architecture Notes](b2b_ec_etl/ETL.md)
 3. [Warehouse README](b2b_ec_warehouse/README.md)
 4. [Sources README](packages/b2b_ec_sources/README.md)
-5. [Utils README](packages/b2b_ec_utils/README.md)
+5. [Pipeline README](packages/b2b_ec_pipeline/README.md)
+6. [Utils README](packages/b2b_ec_utils/README.md)
+7. [Infra README](deploy_infra/README.md)
+
+## License
+BSD 3-Clause License. See [LICENSE](LICENSE).
+
+## Disclaimer
+This repository is a **synthetic data platform simulation** for learning, demos, and portfolio use. It does **not** contain real customer data. Any names, identifiers, and entities are fictitious.
+
+Do not use this code to process real personal/production data without a security review and additional hardening.
